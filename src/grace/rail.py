@@ -54,7 +54,7 @@ class PaymentRail(Protocol):
 
 
 class SandboxPayPal:
-    """Real PayPal sandbox calls. Requires GRACE_PAYPAL_CLIENT_ID / _SECRET."""
+    """Real PayPal sandbox calls. Requires PAYPAL_CLIENT_ID / PAYPAL_CLIENT_SECRET."""
 
     mode = "sandbox"
 
