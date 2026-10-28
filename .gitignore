@@ -7,3 +7,9 @@ venv/
 grace.db
 *.db
 .DS_Store
+
+# build artefacts
+*.egg-info/
+build/
+dist/
+.ruff_cache/
