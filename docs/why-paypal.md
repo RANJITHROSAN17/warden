@@ -91,3 +91,64 @@ they do not remove it. Kubernetes RBAC exists and OPA still became a company.
   the AI platform; nearly two thirds want a standardized liability framework.
 - PayPal Q4 2025 earnings commentary — agentic commerce not material to 2026 growth; significant
   from 2028.
+
+---
+
+# Appendix: where AI actually adds profit, ranked by distance to the P&L
+
+The question a PayPal product judge will ask is not "is this clever" but "which line does it move".
+PayPal's economics are simple at the top: **revenue ≈ settled volume × take rate**, minus losses
+(fraud, disputes), minus the cost to serve. AI only matters to PayPal if it moves one of those.
+
+| # | P&L line | AI application | Distance to profit | Warden's fit |
+|---|---|---|---|---|
+| 1 | **New settled volume** — agentic commerce | authority and policy for agent spending | Direct: TPV that otherwise cannot be authorised | **The core.** Every agent payment that clears a mandate is volume PayPal would not otherwise see |
+| 2 | **Lost volume from refusals** | tell the agent precisely how to succeed, not just that it failed | Direct: recovered TPV × take rate | **Built.** `--story heal`, counterfactuals, `/api/recovery` |
+| 3 | **Dispute and chargeback losses** | evidence assembled from what actually happened | Direct: fewer losses, fewer ops hours | **Partially built.** The receipt chain is the packet; filing a dispute response is not |
+| 4 | **Cost to serve** | refusals that explain themselves; fewer support contacts | Indirect | **Built into the design.** Every hold carries the smallest change that would release it |
+| 5 | Fraud decisioning | better models | Marginal — PayPal's own ML is the industry leader | **Do not compete here.** Say so out loud; it buys credibility |
+| 6 | Support deflection, onboarding, pricing | assorted | Varies | Out of scope |
+
+## Number 2 is the one most people miss
+
+A control that only blocks is a **tax on PayPal's settled volume**. Every agent payment refused is
+revenue that never happens — and the blunt version of this ("spend limits for agents") makes that
+number larger, not smaller.
+
+The counter-move is to make refusal *actionable*. Warden's holds carry a counterfactual: *"remove
+34.00 USD of goods, or approve this one purchase"*. The remediation loop acts on it, resubmits
+inside the rules, and settles. The same guard that stops the wrong payment is the thing that
+rescues the right one.
+
+That is measurable, and the dashboard measures it:
+
+```
+blocked mandates            3
+recovered mandates          2      (66.7%)
+held volume          1,812.00 USD
+recovered volume     1,058.00 USD   ← settled anyway, inside the rules
+```
+
+`GET /api/recovery?take_rate=…` multiplies recovered volume by a take rate **you supply**. The
+server will not assume PayPal's blended rate, because inventing that number would be exactly the
+kind of unsupported claim this project exists to criticise.
+
+## Number 3 is where receipts earn their keep
+
+PayPal's Seller Protection guidance says plainly that *"PayPal does not assess AI intent or
+behavior."* When an agent-initiated payment is disputed, the parties are arguing about something no
+existing evidence format records: what the payer's agent was trying to do, what it was authorised to
+do, and what arrived.
+
+Warden's receipt answers all three, signed, with the artefact hash and the model's identity inside
+the payload. That is a dispute packet for the agentic era — and it is the one artefact in this
+repository that gets **more** valuable to PayPal as agent volume grows, because dispute volume grows
+with it.
+
+## What this means for the pitch
+
+Lead with volume, not with control:
+
+> Warden does not slow agent payments down — it is what lets PayPal authorise them at all. Every
+> blocked payment carries the fix that releases it, and the receipts are what make an agent-initiated
+> payment defensible six months later.

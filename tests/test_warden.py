@@ -235,12 +235,12 @@ def test_api_seed_endpoint_produces_a_verifiable_ledger(tmp_path, monkeypatch) -
     client = TestClient(api_module.app)
 
     seeded = client.post("/api/demo/seed").json()
-    # Five purchasing scenarios, plus the agent-to-agent escrow pair.
-    assert len(seeded["created"]) == 8
-    assert seeded["counts"] == {"allow": 4, "hold": 4, "deny": 0}
+    # Five purchasing scenarios, the agent-to-agent escrow pair, and one never-recovered block.
+    assert len(seeded["created"]) == 9
+    assert seeded["counts"] == {"allow": 4, "hold": 5, "deny": 0}
 
     rows = client.get("/api/ledger").json()["rows"]
-    assert len(rows) == 8
+    assert len(rows) == 9
 
     # The money has a state of its own, and every state is represented.
     states = {row["money_state"] for row in rows if row["money_state"]}
@@ -615,3 +615,24 @@ def test_the_negotiation_view_reports_both_outcomes(tmp_path) -> None:
     assert max(buyer_offers) <= data["mandate"]["ceiling"], (
         "the buyer never offers past the ceiling"
     )
+
+
+def test_recovery_counts_blocked_mandates_that_came_back(tmp_path) -> None:
+    """The commercial metric: blocked volume that settled anyway, and the ones that never did."""
+    from fastapi.testclient import TestClient
+
+    import warden.api as api_module
+
+    api_module.gateway = Gateway(ledger=Ledger(tmp_path / "recovery.db"))
+    client = TestClient(api_module.app)
+    client.post("/api/demo/seed")
+
+    summary = client.get("/api/recovery").json()
+    assert summary["blocked_mandates"] == 3
+    assert summary["recovered_mandates"] == 2, "one mandate must stay blocked, or the rate is a lie"
+    assert 0 < summary["recovery_rate"] < 1
+    assert summary["recovered_volume"] > 0
+
+    # A take rate is supplied, never assumed by the server.
+    priced = client.get("/api/recovery?take_rate=0.02").json()
+    assert priced["recovered_fee_revenue"] == round(summary["recovered_volume"] * 0.02, 2)

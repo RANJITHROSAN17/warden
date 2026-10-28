@@ -140,7 +140,36 @@ def seed() -> dict[str, Any]:
             {"label": "5 granted", "decision_id": decision_id, "outcome": decision.outcome.value}
         )
     created.extend(_seed_market())
+    created.extend(_seed_blocked())
     return {"mandate_id": mandate.id, "created": created, **ledger()}
+
+
+def _seed_blocked() -> list[dict[str, Any]]:
+    """One mandate that is blocked and never recovers.
+
+    Without this the recovery rate would read 100% and mean nothing. A blocker that never converts
+    is the honest baseline a recovery figure has to be measured against.
+    """
+    from warden.models import Vendor as VendorModel
+
+    stranger = VendorModel(
+        id="V-HTTP-YOLO", name="Cheapest Toner Direct", age_days=3, country="XX", approved=False
+    )
+    mandate = gateway.issue_mandate(
+        purpose="restock printer toner, cheapest supplier",
+        ceiling=500.0,
+        categories=["office_supplies"],
+        min_vendor_age_days=30,
+        intent_threshold=0.5,
+        allowed_vendors=["V-ACME"],
+    )
+    _, decision_id = gateway.attempt(
+        mandate,
+        stranger,
+        [item("SKU-TONER", 6)],
+        "restock printer toner for the office",
+    )
+    return [{"label": "9 never recovered", "decision_id": decision_id, "outcome": "hold"}]
 
 
 def _seed_market() -> list[dict[str, Any]]:
@@ -284,6 +313,22 @@ def negotiation_view() -> dict[str, Any]:
         "over_ceiling": over,
         "deal": deal,
     }
+
+
+@app.get("/api/recovery")
+def recovery(take_rate: float | None = None) -> dict[str, Any]:
+    """Of everything the guard stopped, how much came back and settled anyway?
+
+    A control that only blocks reduces settled volume. A control that blocks and tells the agent
+    what would release it converts some of that lost volume back into settled volume. `take_rate`
+    is supplied by the caller rather than assumed here - inventing PayPal's blended rate would be
+    a number this project has no right to state.
+    """
+    summary = gateway.ledger.recovery_summary()
+    if take_rate is not None:
+        summary["take_rate"] = take_rate
+        summary["recovered_fee_revenue"] = round(summary["recovered_volume"] * take_rate, 2)
+    return summary
 
 
 @app.get("/api/money")

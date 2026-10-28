@@ -117,6 +117,39 @@ class Ledger:
         )
         self._conn.commit()
 
+    def recovery_summary(self) -> dict[str, Any]:
+        """Blocked volume that came back and settled anyway.
+
+        PayPal earns on settled volume, so every payment a control refuses is volume that never
+        settles. The commercial question is not "how many did we stop" but "how many did we stop,
+        and how many of those came back inside the rules and settled".
+
+        Counted per mandate: a mandate that saw at least one hold is *blocked*; if that same
+        mandate later settled something, it is *recovered*. That is a proxy, not a promise - it
+        counts mandates rather than units of intent, and it is labelled as one.
+        """
+        rows = self._conn.execute(
+            """SELECT mandate_id,
+                      SUM(CASE WHEN outcome = 'hold' THEN 1 ELSE 0 END) AS holds,
+                      SUM(CASE WHEN outcome = 'allow' THEN 1 ELSE 0 END) AS allows,
+                      SUM(CASE WHEN outcome = 'hold' THEN amount ELSE 0 END) AS held_volume,
+                      SUM(CASE WHEN outcome = 'allow' THEN amount ELSE 0 END) AS allowed_volume,
+                      MAX(currency) AS currency
+               FROM decisions GROUP BY mandate_id"""
+        ).fetchall()
+
+        blocked = [row for row in rows if row["holds"]]
+        recovered = [row for row in blocked if row["allows"]]
+        return {
+            "mandates": len(rows),
+            "blocked_mandates": len(blocked),
+            "recovered_mandates": len(recovered),
+            "held_volume": round(sum(row["held_volume"] for row in blocked), 2),
+            "recovered_volume": round(sum(row["allowed_volume"] for row in recovered), 2),
+            "currency": blocked[0]["currency"] if blocked else "USD",
+            "recovery_rate": round(len(recovered) / len(blocked), 3) if blocked else 0.0,
+        }
+
     def money_summary(self) -> list[dict[str, Any]]:
         rows = self._conn.execute(
             """SELECT money_state, currency, COUNT(*) AS n, ROUND(SUM(amount), 2) AS total

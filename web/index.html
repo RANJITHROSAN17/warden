@@ -55,6 +55,7 @@
   .chip.auth { background:rgba(91,141,239,.16); color:var(--accent); }
   .chip.rel  { background:rgba(139,151,173,.16); color:var(--dim); }
   .card .v.auth { color:var(--accent); } .card .v.rel { color:var(--dim); }
+  .card .sub { color:var(--dim); font-size:11px; margin-top:1px; }
   .filters { display:flex; gap:6px; align-items:center; }
   .filters button { background:transparent; border:1px solid var(--line); color:var(--dim);
                     padding:6px 11px; font-weight:600; font-size:12px; }
@@ -86,6 +87,7 @@
     <div class="card money"><div class="k">In escrow — authorised, not taken</div><div class="v auth" id="m-auth">0.00</div></div>
     <div class="card money"><div class="k">Paid — captured on proof</div><div class="v allow" id="m-paid">0.00</div></div>
     <div class="card money"><div class="k">Released — voided</div><div class="v rel" id="m-void">0.00</div></div>
+    <div class="card money"><div class="k">Recovered — stopped, then settled</div><div class="v" id="m-recovered">0.00</div></div>
     <div class="card"><div class="k">Decisions</div><div class="v" id="n-counts" style="font-size:15px">—</div></div>
     <div style="display:flex;align-items:center;gap:8px;margin-left:auto">
       <button id="seed">Run the scenarios</button>
@@ -129,7 +131,7 @@
 </main>
 <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@32.2.2/dist/ag-grid-community.min.js"></script>
 <script>
-const state = { rows: [], counts: { allow: 0, hold: 0, deny: 0 }, money: [], filter: "all" };
+const state = { rows: [], counts: { allow: 0, hold: 0, deny: 0 }, money: [], recovery: null, filter: "all" };
 
 const MONEY = {
   authorised: ["auth", "IN ESCROW"],
@@ -172,6 +174,14 @@ function renderMoney() {
   document.getElementById("m-auth").textContent = `${totals.authorised.toFixed(2)} ${currency}`;
   document.getElementById("m-paid").textContent = `${totals.captured.toFixed(2)} ${currency}`;
   document.getElementById("m-void").textContent = `${totals.voided.toFixed(2)} ${currency}`;
+
+  const recovery = state.recovery || {};
+  const recovered = document.getElementById("m-recovered");
+  if (recovered) {
+    recovered.textContent = `${(recovery.recovered_volume || 0).toFixed(2)} ${recovery.currency || currency}`;
+    recovered.insertAdjacentHTML("afterend",
+      `<div class="sub">${recovery.recovered_mandates || 0} of ${recovery.blocked_mandates || 0} blocked mandates came back</div>`);
+  }
 }
 
 function fallbackTable() {
@@ -263,8 +273,11 @@ function renderGrid() {
 }
 
 async function refresh() {
-  const [data, money] = await Promise.all([api("/api/ledger"), api("/api/money")]);
-  state.rows = data.rows; state.counts = data.counts; state.money = money.summary;
+  const [data, money, recovery] = await Promise.all([
+    api("/api/ledger"), api("/api/money"), api("/api/recovery"),
+  ]);
+  state.rows = data.rows; state.counts = data.counts;
+  state.money = money.summary; state.recovery = recovery;
   renderCounts(); renderMoney(); renderGrid();
 }
 
