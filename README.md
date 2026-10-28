@@ -278,6 +278,10 @@ The buyer does not concede past its limit — it negotiates a **smaller basket**
 allowed). And if it had settled at 534 anyway, the rules would have held it. The negotiation is the
 model's; the ceiling is not.
 
+The merchant side is an in-process stand-in (`Seller`), not a remote agent — see
+[`docs/TOPOLOGY.md`](docs/TOPOLOGY.md) for exactly where each half runs, what PayPal does and does
+not see, and what it would take to put a real network boundary between them.
+
 ### The agent repairs itself
 
 ```bash
