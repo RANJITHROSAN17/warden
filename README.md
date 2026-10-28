@@ -2,12 +2,12 @@
 
 # Grace
 
-**The agent that finishes the payment — and defends it afterwards.**
+**The agent that answers PayPal's dispute queue.**
 
-A payment is authorised, then it waits. Grace is what happens in that wait, and what happens
-when someone disputes it later.
+PayPal gives merchants a disputes API. Grace is the agent that knows which cases are worth
+answering — and answers them with evidence from the payment record itself, inside the deadline.
 
-`PayPal Orders API` · `Authorize → Capture → Void` · `partial capture` · `disputes` · `signed receipts` · `MIT`
+`PayPal Disputes API` · `INR / SNAD / unauthorized` · `pre-chargeback alerts` · `signed receipts` · `MIT`
 
 <sub>Built for the PayPal AI Hackathon. Not affiliated with or endorsed by PayPal.
 Sandbox only — no real money moves anywhere in this repository.</sub>
@@ -15,6 +15,39 @@ Sandbox only — no real money moves anywhere in this repository.</sub>
 </div>
 
 ---
+
+## The problem
+
+PayPal's dispute process is well built: a Resolution Center, a Disputes API, inquiry and claim
+stages, 20 days to resolve amicably, appeals, and **pre-chargeback alerts with 20 hours to refund
+and avoid the fee**.
+
+The API moves a response. It does not tell a merchant:
+
+1. **which evidence this reason code actually needs** — merchants guess, and lose on evidence that
+   existed in another system;
+2. **whether the case is worth fighting** — contesting a hopeless claim costs the sale *and* a fee;
+3. **where the evidence is** — the order system, the courier, the inbox, none of which talk to
+   PayPal;
+4. **who is watching the clock** — 20 hours is shorter than most triage rotas.
+
+That is judgment over unstructured material, which is the work a model does and a rule cannot.
+
+## What it does
+
+```
+alert     no delivery evidence
+        decision    REFUND
+        because     delivery_proof does not exist. A chargeback would be lost and would cost a
+                    fee as well as the sale, so refund inside the 17.4 hours remaining.
+
+alert     delivery evidence on file
+        decision    CONTEST
+        because     delivery_proof exists and is signed. Let the alert become a chargeback and
+                    answer it with evidence; refunding would give away a case that can be won.
+```
+
+**The refund is the valuable decision.** An agent that contests everything loses money politely.
 
 ## Two moments where AI is genuinely required
 

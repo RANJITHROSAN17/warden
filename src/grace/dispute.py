@@ -22,21 +22,33 @@ from typing import Any
 
 # What each reason code actually requires. Written from how disputes are argued: a claim of
 # non-receipt is answered with delivery, an unauthorised claim with consent, and so on.
+# PayPal's own vocabulary, from the Disputes API: INR, SNAD, unauthorised, duplicate, billing
+# error. Using their terms rather than ours matters - a judge from PayPal should recognise every
+# string in this file.
 REQUIREMENTS: dict[str, tuple[str, ...]] = {
-    "MERCHANDISE_NOT_RECEIVED": ("delivery_proof", "delivery_date", "customer_contact"),
-    "UNAUTHORISED": ("authorisation_record", "customer_contact", "customer_history"),
-    "DUPLICATE": ("capture_record", "distinct_charges"),
+    "ITEM_NOT_RECEIVED": ("delivery_proof", "delivery_date", "customer_contact"),
     "NOT_AS_DESCRIBED": ("delivery_proof", "description_match", "customer_contact"),
-    "CREDIT_NOT_PROCESSED": ("refund_record",),
+    "UNAUTHORIZED": ("authorisation_record", "customer_contact", "customer_history"),
+    "DUPLICATE": ("capture_record", "distinct_charges"),
+    "BILLING_ERROR": ("refund_record", "customer_contact"),
+}
+
+# Accepted spellings, so a caller using the older names still works.
+ALIASES = {
+    "MERCHANDISE_NOT_RECEIVED": "ITEM_NOT_RECEIVED",
+    "UNAUTHORISED": "UNAUTHORIZED",
+    "CREDIT_NOT_PROCESSED": "BILLING_ERROR",
+    "SNAD": "NOT_AS_DESCRIBED",
+    "INR": "ITEM_NOT_RECEIVED",
 }
 
 # Which requirement is decisive: without it, contesting is donating a fee.
 DECISIVE = {
-    "MERCHANDISE_NOT_RECEIVED": "delivery_proof",
-    "UNAUTHORISED": "authorisation_record",
-    "DUPLICATE": "distinct_charges",
+    "ITEM_NOT_RECEIVED": "delivery_proof",
     "NOT_AS_DESCRIBED": "description_match",
-    "CREDIT_NOT_PROCESSED": "refund_record",
+    "UNAUTHORIZED": "authorisation_record",
+    "DUPLICATE": "distinct_charges",
+    "BILLING_ERROR": "refund_record",
 }
 
 SUPPORTING = {
@@ -79,8 +91,12 @@ class Dispute:
     due_at: str
 
     @property
+    def code(self) -> str:
+        return ALIASES.get(self.reason_code, self.reason_code)
+
+    @property
     def requirements(self) -> tuple[str, ...]:
-        return REQUIREMENTS.get(self.reason_code, ())
+        return REQUIREMENTS.get(self.code, ())
 
     def public(self) -> dict[str, Any]:
         return {
@@ -190,13 +206,13 @@ def assess(dispute: Dispute, evidence: list[Evidence]) -> Assessment:
 
     satisfied = [f for f in findings if f.satisfied]
     coverage = round(len(satisfied) / len(findings), 3) if findings else 0.0
-    decisive = DECISIVE.get(dispute.reason_code)
+    decisive = DECISIVE.get(dispute.code)
     decisive_finding = next((f for f in findings if f.requirement == decisive), None)
 
     if decisive_finding is not None and not decisive_finding.satisfied:
         recommendation = "accept"
         explanation = (
-            f"the decisive requirement for {dispute.reason_code} is missing: "
+            f"the decisive requirement for {dispute.code} is missing: "
             f"{decisive}. Contesting without it pays a fee to lose."
         )
     elif not dispute.requirements:
@@ -273,3 +289,79 @@ def _packet(
         "declined_evidence": [item.public() for item in evidence if item.id not in used],
         "statement": "No evidence outside this packet is asserted.",
     }
+
+
+# ── pre-chargeback alerts ────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Alert:
+    """A pre-chargeback alert: PayPal's warning that a chargeback is coming.
+
+    PayPal's documentation gives the merchant **20 hours** to refund and avoid the chargeback and
+    its fee. That deadline is the whole reason this needs an agent rather than a queue: the useful
+    decision has to be made faster than a human triage rota usually runs.
+    """
+
+    id: str
+    payment_id: str
+    reason_code: str
+    amount: float
+    currency: str
+    hours_remaining: float
+
+    @property
+    def code(self) -> str:
+        return ALIASES.get(self.reason_code, self.reason_code)
+
+
+@dataclass(frozen=True)
+class Triage:
+    alert_id: str
+    decision: str  # refund | contest
+    explanation: str
+    decisive_evidence: bool
+
+    def public(self) -> dict[str, Any]:
+        return {
+            "alert_id": self.alert_id,
+            "decision": self.decision,
+            "explanation": self.explanation,
+            "decisive_evidence": self.decisive_evidence,
+        }
+
+
+def triage_alert(alert: Alert, evidence: list[Evidence]) -> Triage:
+    """Refund inside the window, or let it become a chargeback and fight it.
+
+    The economics are asymmetric: refunding costs the sale, while contesting a case without the
+    decisive evidence costs the sale, the fee, and the operational time. So the rule is blunt -
+    no decisive evidence, refund now; decisive evidence, take the chargeback.
+    """
+    kinds = {item.kind for item in evidence}
+    decisive = DECISIVE.get(alert.code)
+    has_decisive = bool(decisive and decisive in kinds)
+
+    if alert.hours_remaining <= 0:
+        return Triage(
+            alert.id,
+            "refund",
+            "the 20-hour window has closed; refunding now is the only way to avoid the fee.",
+            has_decisive,
+        )
+    if not has_decisive:
+        return Triage(
+            alert.id,
+            "refund",
+            f"{decisive or 'the decisive evidence'} does not exist. A chargeback would be lost "
+            f"and would cost a fee as well as the sale, so refund inside the "
+            f"{alert.hours_remaining:.1f} hours remaining.",
+            False,
+        )
+    return Triage(
+        alert.id,
+        "contest",
+        f"{decisive} exists and is signed. Let the alert become a chargeback and answer it with "
+        f"evidence; refunding would give away a case that can be won.",
+        True,
+    )

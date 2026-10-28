@@ -309,7 +309,7 @@ def test_a_fully_evidenced_claim_is_contested() -> None:
     engine.capture(payment)
 
     claim = d.Dispute(
-        "dsp_1", payment.id, "MERCHANDISE_NOT_RECEIVED", 180.0, "USD", "never arrived", "2026-11-04"
+        "dsp_1", payment.id, "ITEM_NOT_RECEIVED", 180.0, "USD", "never arrived", "2026-11-04"
     )
     attached = [
         d.Evidence("e1", "delivery_proof", "carrier scan", "logistics"),
@@ -329,7 +329,7 @@ def test_a_claim_without_the_decisive_evidence_is_not_fought() -> None:
     payment = engine.authorise(authority, payee(), 180.0)
 
     claim = d.Dispute(
-        "dsp_2", payment.id, "MERCHANDISE_NOT_RECEIVED", 180.0, "USD", "never arrived", "2026-11-04"
+        "dsp_2", payment.id, "ITEM_NOT_RECEIVED", 180.0, "USD", "never arrived", "2026-11-04"
     )
     result = d.assess(claim, d.gather(claim, ledger.transitions(payment.id), []))
     assert result.recommendation == "accept"
@@ -343,7 +343,7 @@ def test_the_packet_cites_only_evidence_it_used() -> None:
     engine, ledger, _, authority = build()
     payment = engine.authorise(authority, payee(), 180.0)
     claim = d.Dispute(
-        "dsp_3", payment.id, "MERCHANDISE_NOT_RECEIVED", 180.0, "USD", "never arrived", "2026-11-04"
+        "dsp_3", payment.id, "ITEM_NOT_RECEIVED", 180.0, "USD", "never arrived", "2026-11-04"
     )
     attached = [
         d.Evidence("e1", "delivery_proof", "carrier scan", "logistics"),
@@ -365,3 +365,31 @@ def test_an_unknown_reason_code_is_not_guessed_at() -> None:
     result = d.assess(claim, d.gather(claim, ledger.transitions(payment.id), []))
     assert result.recommendation == "accept"
     assert "no requirement map" in result.explanation
+
+
+def test_an_alert_without_the_decisive_evidence_is_refunded_inside_the_window() -> None:
+    """20 hours is the whole point: refund faster than a triage rota runs."""
+    from grace import dispute as d
+
+    alert = d.Alert("alr_1", "pay_1", "ITEM_NOT_RECEIVED", 180.0, "USD", hours_remaining=17.4)
+    triage = d.triage_alert(alert, [d.Evidence("e1", "customer_contact", "chat", "inbox")])
+    assert triage.decision == "refund"
+    assert triage.decisive_evidence is False
+    assert "fee" in triage.explanation
+
+
+def test_an_alert_with_signed_evidence_becomes_a_chargeback_worth_fighting() -> None:
+    from grace import dispute as d
+
+    alert = d.Alert("alr_2", "pay_1", "ITEM_NOT_RECEIVED", 180.0, "USD", hours_remaining=17.4)
+    triage = d.triage_alert(alert, [d.Evidence("e1", "delivery_proof", "scan 4471", "logistics")])
+    assert triage.decision == "contest"
+
+
+def test_paypal_reason_code_aliases_resolve() -> None:
+    from grace import dispute as d
+
+    for alias, code in (("INR", "ITEM_NOT_RECEIVED"), ("SNAD", "NOT_AS_DESCRIBED")):
+        found = d.Dispute("d", "p", alias, 1.0, "USD", "x", "2026-11-04")
+        assert found.code == code
+        assert found.requirements

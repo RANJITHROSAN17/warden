@@ -224,7 +224,7 @@ def story_defend(mode: str = "auto") -> int:
     # Three claims on the same kind of payment, with different evidence behind them.
     cases = [
         (
-            "MERCHANDISE_NOT_RECEIVED",
+            "ITEM_NOT_RECEIVED",
             "The item never arrived.",
             [
                 dispute_mod.Evidence(
@@ -242,7 +242,7 @@ def story_defend(mode: str = "auto") -> int:
             ],
         ),
         (
-            "MERCHANDISE_NOT_RECEIVED",
+            "ITEM_NOT_RECEIVED",
             "The item never arrived.",
             [
                 dispute_mod.Evidence(
@@ -251,7 +251,7 @@ def story_defend(mode: str = "auto") -> int:
             ],
         ),
         (
-            "MERCHANDISE_NOT_RECEIVED",
+            "ITEM_NOT_RECEIVED",
             "The item never arrived.",
             [],
         ),
@@ -291,7 +291,7 @@ def story_defend(mode: str = "auto") -> int:
     dispute = dispute_mod.Dispute(
         id="dsp_001",
         payment_id=paid.id,
-        reason_code="MERCHANDISE_NOT_RECEIVED",
+        reason_code="ITEM_NOT_RECEIVED",
         amount=180.0,
         currency="USD",
         claim="The item never arrived.",
@@ -328,6 +328,54 @@ def story_defend(mode: str = "auto") -> int:
     return 0
 
 
+def story_alert(mode: str = "auto") -> int:
+    """A pre-chargeback alert, and the 20 hours PayPal gives a merchant to decide.
+
+    This is the sharpest case in the product, because the deadline is short enough that a human
+    triage rota usually misses it, and the two ways to be wrong cost differently: refunding gives
+    away a sale, contesting without evidence gives away the sale and a fee.
+    """
+    rail = make_rail(mode)
+    ledger = Ledger()
+    engine = Engine(ledger, rail)
+    authority = _authority("Q4 office restock")
+    _header("a pre-chargeback alert, 20 hours on the clock", rail)
+
+    paid = engine.authorise(authority, _payee(), 180.0)
+    engine.capture(paid)
+    print(f"payment   {paid.id}  180.00 USD  captured and receipted")
+    print("alert     PayPal warns a chargeback is coming; 20 hours to refund and avoid the fee")
+    print()
+
+    shipped = [
+        dispute_mod.Evidence("ev_ship", "delivery_proof", "carrier scan 4471 9920", "logistics"),
+        dispute_mod.Evidence("ev_date", "delivery_date", "delivered 14 Oct 09:12", "logistics"),
+        dispute_mod.Evidence("ev_msg", "customer_contact", "customer confirmed receipt", "inbox"),
+    ]
+
+    for label, attached in (("no delivery evidence", []), ("delivery evidence on file", shipped)):
+        alert = dispute_mod.Alert(
+            id=f"alr_{label.split()[0]}",
+            payment_id=paid.id,
+            reason_code="ITEM_NOT_RECEIVED",
+            amount=180.0,
+            currency="USD",
+            hours_remaining=17.4,
+        )
+        evidence = dispute_mod.gather(alert, ledger.transitions(paid.id), attached)  # type: ignore[arg-type]
+        triage = dispute_mod.triage_alert(alert, evidence)
+        print(f"alert     {label}")
+        print(f"        evidence    {len(attached)} attached, 17.4 hours left")
+        print(f"        decision    {triage.decision.upper()}")
+        print(f"        because     {triage.explanation}")
+        print()
+
+    print("Refunding gives away a sale. Contesting without evidence gives away the sale and a fee.")
+    print("The agent's job is to know which one it is looking at, in under an hour, every time.")
+    print()
+    return 0
+
+
 STORIES = {
     "full": story_full,
     "partial": story_partial,
@@ -335,6 +383,7 @@ STORIES = {
     "overreach": story_overreach,
     "expired": story_expired,
     "defend": story_defend,
+    "alert": story_alert,
 }
 
 
@@ -347,7 +396,15 @@ def _main(argv: list[str] | None = None) -> int:
 
     try:
         if args.all:
-            for name in ("full", "partial", "retry", "overreach", "expired", "defend"):
+            for name in (
+                "full",
+                "partial",
+                "retry",
+                "overreach",
+                "expired",
+                "defend",
+                "alert",
+            ):
                 STORIES[name](args.rail)
             return 0
         return STORIES[args.story](args.rail)

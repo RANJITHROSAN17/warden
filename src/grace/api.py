@@ -289,10 +289,10 @@ def _seed_disputes(payment_id: str) -> None:
         },
     ]
     cases = [
-        ("dsp_001", "MERCHANDISE_NOT_RECEIVED", "The item never arrived.", shipped),
-        ("dsp_002", "MERCHANDISE_NOT_RECEIVED", "The item never arrived.", shipped[:1]),
-        ("dsp_003", "MERCHANDISE_NOT_RECEIVED", "The item never arrived.", []),
-        ("dsp_004", "UNAUTHORISED", "I do not recognise this charge.", []),
+        ("dsp_001", "ITEM_NOT_RECEIVED", "The item never arrived.", shipped),
+        ("dsp_002", "ITEM_NOT_RECEIVED", "The item never arrived.", shipped[:1]),
+        ("dsp_003", "ITEM_NOT_RECEIVED", "The item never arrived.", []),
+        ("dsp_004", "UNAUTHORIZED", "I do not recognise this charge.", []),
     ]
     for dispute_id, reason_code, claim, attached in cases:
         found = dispute_mod.Dispute(
