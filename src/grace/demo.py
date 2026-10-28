@@ -13,6 +13,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 from grace import compensate
+from grace import dispute as dispute_mod
 from grace.engine import Engine
 from grace.ledger import Ledger
 from grace.models import Action, Authority, Payee, Payment
@@ -203,12 +204,137 @@ def story_expired(mode: str = "auto") -> int:
     return 0
 
 
+def story_defend(mode: str = "auto") -> int:
+    """A chargeback arrives. What is it worth fighting, and what does the argument look like?
+
+    The interesting case is the one that should not be fought. An agent that contests everything
+    loses money politely; the value here is knowing which claim the evidence actually supports.
+    """
+    rail = make_rail(mode)
+    ledger = Ledger()
+    engine = Engine(ledger, rail)
+    authority = _authority("Q4 office restock")
+    _header("answering a chargeback", rail)
+
+    paid = engine.authorise(authority, _payee(), 180.0)
+    engine.capture(paid)
+    print(f"payment   {paid.id}  180.00 USD  captured, receipted")
+    print()
+
+    # Three claims on the same kind of payment, with different evidence behind them.
+    cases = [
+        (
+            "MERCHANDISE_NOT_RECEIVED",
+            "The item never arrived.",
+            [
+                dispute_mod.Evidence(
+                    "ev_ship", "delivery_proof", "carrier scan 4471 9920", "merchant: logistics"
+                ),
+                dispute_mod.Evidence(
+                    "ev_date", "delivery_date", "delivered 2026-10-14 09:12", "merchant: logistics"
+                ),
+                dispute_mod.Evidence(
+                    "ev_msg",
+                    "customer_contact",
+                    "customer confirmed receipt by email",
+                    "merchant: inbox",
+                ),
+            ],
+        ),
+        (
+            "MERCHANDISE_NOT_RECEIVED",
+            "The item never arrived.",
+            [
+                dispute_mod.Evidence(
+                    "ev_ship", "delivery_proof", "carrier scan 4471 9920", "merchant: logistics"
+                )
+            ],
+        ),
+        (
+            "MERCHANDISE_NOT_RECEIVED",
+            "The item never arrived.",
+            [],
+        ),
+    ]
+
+    for index, (reason_code, claim, attached) in enumerate(cases, start=1):
+        dispute = dispute_mod.Dispute(
+            id=f"dsp_{index:03d}",
+            payment_id=paid.id,
+            reason_code=reason_code,
+            amount=180.0,
+            currency="USD",
+            claim=claim,
+            due_at="2026-11-04",
+        )
+        evidence = dispute_mod.gather(dispute, ledger.transitions(paid.id), attached)
+        result = dispute_mod.assess(dispute, evidence)
+
+        print(f"dispute {index}   {reason_code}   {dispute.amount:.2f} {dispute.currency}")
+        print(f'        claim       "{claim}"')
+        print(
+            f"        evidence    {len(attached)} attached, "
+            f"{len(evidence) - len(attached)} from the payment's own receipts"
+        )
+        for finding in result.findings:
+            mark = "ok  " if finding.satisfied else "MISS"
+            print(
+                f"        {mark}  {finding.requirement:<22} "
+                f"{', '.join(finding.evidence_ids) or finding.note}"
+            )
+        print(
+            f"        verdict     {result.recommendation.upper()}  coverage {result.coverage:.2f}"
+        )
+        print(f"        because     {result.explanation}")
+        print()
+
+    dispute = dispute_mod.Dispute(
+        id="dsp_001",
+        payment_id=paid.id,
+        reason_code="MERCHANDISE_NOT_RECEIVED",
+        amount=180.0,
+        currency="USD",
+        claim="The item never arrived.",
+        due_at="2026-11-04",
+    )
+    best = dispute_mod.assess(
+        dispute,
+        dispute_mod.gather(
+            dispute,
+            ledger.transitions(paid.id),
+            [
+                dispute_mod.Evidence(
+                    "ev_ship", "delivery_proof", "carrier scan 4471 9920", "merchant: logistics"
+                ),
+                dispute_mod.Evidence(
+                    "ev_date", "delivery_date", "delivered 2026-10-14 09:12", "merchant: logistics"
+                ),
+                dispute_mod.Evidence(
+                    "ev_msg", "customer_contact", "customer confirmed receipt", "merchant: inbox"
+                ),
+            ],
+        ),
+    )
+    print("the response that gets filed")
+    print(RULE)
+    for line in best.narrative.splitlines():
+        print(f"   {line}")
+    print()
+    print("Every requirement maps to an evidence id, and the template cannot add a claim that no")
+    print(
+        "evidence supports. Half of this packet already existed because the payment was receipted."
+    )
+    print()
+    return 0
+
+
 STORIES = {
     "full": story_full,
     "partial": story_partial,
     "retry": story_retry,
     "overreach": story_overreach,
     "expired": story_expired,
+    "defend": story_defend,
 }
 
 
@@ -221,7 +347,7 @@ def _main(argv: list[str] | None = None) -> int:
 
     try:
         if args.all:
-            for name in ("full", "partial", "retry", "overreach", "expired"):
+            for name in ("full", "partial", "retry", "overreach", "expired", "defend"):
                 STORIES[name](args.rail)
             return 0
         return STORIES[args.story](args.rail)

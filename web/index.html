@@ -35,7 +35,9 @@
   .chip { padding:2px 8px; border-radius:999px; font-size:10.5px; font-weight:700; letter-spacing:.4px; }
   .chip.authorised, .chip.part_captured { background:rgba(91,141,239,.16); color:var(--open); }
   .chip.captured { background:rgba(47,191,113,.16); color:var(--ok); }
-  .chip.part_released, .chip.voided, .chip.expired { background:rgba(139,151,173,.16); color:var(--dim); }
+  .chip.part_released, .chip.voided, .chip.expired, .chip.rel { background:rgba(139,151,173,.16); color:var(--dim); }
+  .chip.ok { background:rgba(47,191,113,.16); color:var(--ok); }
+  .chip.warn { background:rgba(224,168,0,.16); color:var(--warn); }
   .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; color:var(--dim); }
   #detail { margin-top:18px; }
   .timeline { border-left:2px solid var(--line); margin:8px 0 0 6px; padding-left:16px; }
@@ -95,6 +97,17 @@
   <div id="detail"></div>
   <div id="panel"></div>
 
+  <h2 style="font-size:15px;margin:26px 0 4px">Chargebacks — fight the ones the evidence supports</h2>
+  <p class="note" style="margin:0 0 10px">
+    Each claim is mapped against what its reason code demands. The agent recommends contesting,
+    contesting a narrower claim, or accepting — and writes the argument only when the evidence exists.
+  </p>
+  <table>
+    <thead><tr><th>Dispute</th><th>Reason</th><th>Amount</th><th>Evidence</th><th>Recommendation</th><th></th></tr></thead>
+    <tbody id="dispute-rows"><tr><td colspan="6" class="mono">run the cases to see disputes.</td></tr></tbody>
+  </table>
+  <div id="dispute-panel"></div>
+
   <p class="note">
     <b>Open</b> means the money is committed and not taken — the window this product exists for.
     Click any payment to see every move the agent made on it, including the refusals, each with a
@@ -102,7 +115,7 @@
   </p>
 </main>
 <script>
-const state = { payments: [], summary: null, selected: null };
+const state = { payments: [], summary: null, selected: null, disputes: [] };
 
 async function api(path, options) {
   const response = await fetch(path, Object.assign({ headers: { "Content-Type": "application/json" } }, options));
@@ -175,6 +188,50 @@ async function selectPayment(paymentId) {
   document.getElementById("panel").innerHTML = "";
 }
 
+const RECOMMEND = {
+  contest: ["ok", "CONTEST"],
+  contest_partial: ["warn", "CONTEST PARTLY"],
+  accept: ["rel", "ACCEPT"],
+};
+
+function renderDisputes() {
+  const rows = (state.disputes || []).map(d => {
+    const [cls, label] = RECOMMEND[d.recommendation] || ["rel", "UNASSESSED"];
+    return `
+      <tr class="pick" onclick="assessDispute('${d.id}')">
+        <td class="mono">${d.id}</td>
+        <td>${d.reason_code.replace(/_/g, " ").toLowerCase()}</td>
+        <td class="mono">${money(d.amount)} ${d.currency}</td>
+        <td class="mono">${d.coverage != null ? (d.coverage * 100).toFixed(0) + "%" : "—"}</td>
+        <td><span class="chip ${cls}">${label}</span></td>
+        <td class="mono">${d.filed ? "filed" : "due " + d.due_at}</td>
+      </tr>`;
+  }).join("");
+  document.getElementById("dispute-rows").innerHTML =
+    rows || '<tr><td colspan="6" class="mono">run the cases to see disputes.</td></tr>';
+}
+
+async function assessDispute(disputeId) {
+  const result = await api(`/api/disputes/${disputeId}/assess`, { method: "POST" });
+  const a = result.assessment;
+  const [cls, label] = RECOMMEND[a.recommendation] || ["rel", "UNASSESSED"];
+  const findings = a.findings.map(f => `
+    <div class="r">
+      <span class="t ${f.satisfied ? "valid" : "invalid"}">${f.satisfied ? "FROM EVIDENCE" : "MISSING"}</span>
+      <code>${f.requirement}</code>
+      <span class="note" style="margin:0">${f.satisfied ? f.note : "not claimed"}</span>
+    </div>`).join("");
+  document.getElementById("dispute-panel").innerHTML = `
+    <div class="verdict">
+      <h3>${a.dispute_id} — <span class="chip ${cls}">${label}</span>
+        coverage ${(a.coverage * 100).toFixed(0)}%</h3>
+      ${findings}
+      <p class="note">${a.explanation}</p>
+      ${a.narrative ? `<pre style="white-space:pre-wrap;font-size:12.5px;color:#e8edf7;
+        background:#0b0d12;border:1px solid var(--line);border-radius:8px;padding:12px;margin-top:8px">${a.narrative}</pre>` : ""}
+    </div>`;
+}
+
 async function verify(transitionId) {
   const result = await api(`/api/transitions/${transitionId}/verify`);
   renderPanel(`Receipt ${transitionId}`, [{ ok: result.ok, label: "as signed", message: result.message }],
@@ -211,11 +268,15 @@ function renderPanel(title, rows, note) {
 }
 
 async function refresh() {
-  const [payments, summary] = await Promise.all([api("/api/payments"), api("/api/summary")]);
+  const [payments, summary, disputes] = await Promise.all([
+    api("/api/payments"), api("/api/summary"), api("/api/disputes"),
+  ]);
   state.payments = payments.payments;
   state.summary = summary;
+  state.disputes = disputes.disputes;
   renderSummary();
   renderRows();
+  renderDisputes();
 }
 
 async function boot() {

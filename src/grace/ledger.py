@@ -44,6 +44,19 @@ CREATE TABLE IF NOT EXISTS payments (
     authorization_id TEXT,
     expires_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS disputes (
+    id TEXT PRIMARY KEY,
+    at TEXT NOT NULL,
+    payment_id TEXT NOT NULL,
+    reason_code TEXT NOT NULL,
+    amount REAL NOT NULL,
+    currency TEXT NOT NULL,
+    claim TEXT NOT NULL,
+    due_at TEXT NOT NULL,
+    attached TEXT NOT NULL DEFAULT '[]',
+    assessment TEXT,
+    filed INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS transitions (
     id TEXT PRIMARY KEY,
     at TEXT NOT NULL,
@@ -195,6 +208,76 @@ class Ledger:
                 }
             )
         return out
+
+    # ── disputes ───────────────────────────────────────────────────────────────────────────
+    def save_dispute(self, dispute: Any, attached: list[dict[str, Any]] | None = None) -> None:
+        self._conn.execute(
+            """INSERT OR REPLACE INTO disputes
+               (id, at, payment_id, reason_code, amount, currency, claim, due_at, attached)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (
+                dispute.id,
+                getattr(dispute, "at", ""),
+                dispute.payment_id,
+                dispute.reason_code,
+                dispute.amount,
+                dispute.currency,
+                dispute.claim,
+                dispute.due_at,
+                json.dumps(attached or []),
+            ),
+        )
+        self._conn.commit()
+
+    def disputes(self) -> list[dict[str, Any]]:
+        rows = self._conn.execute("SELECT * FROM disputes ORDER BY due_at, rowid").fetchall()
+        out = []
+        for row in rows:
+            assessment = json.loads(row["assessment"]) if row["assessment"] else None
+            out.append(
+                {
+                    "id": row["id"],
+                    "payment_id": row["payment_id"],
+                    "reason_code": row["reason_code"],
+                    "amount": row["amount"],
+                    "currency": row["currency"],
+                    "claim": row["claim"],
+                    "due_at": row["due_at"],
+                    "filed": bool(row["filed"]),
+                    "recommendation": (assessment or {}).get("recommendation"),
+                    "coverage": (assessment or {}).get("coverage"),
+                    "missing": (assessment or {}).get("missing", []),
+                }
+            )
+        return out
+
+    def get_dispute(self, dispute_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute("SELECT * FROM disputes WHERE id = ?", (dispute_id,)).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "payment_id": row["payment_id"],
+            "reason_code": row["reason_code"],
+            "amount": row["amount"],
+            "currency": row["currency"],
+            "claim": row["claim"],
+            "due_at": row["due_at"],
+            "attached": json.loads(row["attached"]),
+            "assessment": json.loads(row["assessment"]) if row["assessment"] else None,
+            "filed": bool(row["filed"]),
+        }
+
+    def save_assessment(self, dispute_id: str, assessment: dict[str, Any]) -> None:
+        self._conn.execute(
+            "UPDATE disputes SET assessment = ? WHERE id = ?",
+            (json.dumps(assessment, sort_keys=True), dispute_id),
+        )
+        self._conn.commit()
+
+    def mark_filed(self, dispute_id: str) -> None:
+        self._conn.execute("UPDATE disputes SET filed = 1 WHERE id = ?", (dispute_id,))
+        self._conn.commit()
 
     def receipt(self, transition_id: str) -> dict[str, Any] | None:
         row = self._conn.execute(

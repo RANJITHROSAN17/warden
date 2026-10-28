@@ -83,7 +83,10 @@ class Engine:
         self.ledger.save_authority(authority, payment.created_at)
         self.ledger.save_payment(payment)
 
-        action = self._action(
+        # `_action` writes the transition. Adding it again here duplicated the authorisation in
+        # the ledger, which showed up as two records in an evidence packet - the kind of clerical
+        # error that loses a dispute on its own.
+        self._action(
             payment=payment,
             kind="authorise",
             amount=payment.amount,
@@ -94,7 +97,6 @@ class Engine:
             checks=(Check("authority.ceiling", True, f"inside {authority.ceiling:.2f}"),),
             rail={**order, **authorization},
         )
-        self.ledger.add_transition(action)
         return payment
 
     # ── the operations inside the gap ─────────────────────────────────────────────────────

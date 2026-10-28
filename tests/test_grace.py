@@ -288,3 +288,80 @@ def test_the_api_serves_the_whole_story(tmp_path) -> None:
     assert tampered["tampered"]["ok"] is False
     # the stored receipt is untouched
     assert client.get(f"/api/transitions/{transition_id}/verify").json()["ok"] is True
+
+
+# ── disputes: argue only what the evidence supports ──────────────────────────────────────
+
+
+def test_an_authorisation_is_recorded_once(tmp_path) -> None:
+    """A duplicated record in an evidence packet looks like a second charge."""
+    engine, ledger, _, authority = build()
+    payment = engine.authorise(authority, payee(), 180.0)
+    kinds = [t["kind"] for t in ledger.transitions(payment.id)]
+    assert kinds.count("authorise") == 1
+
+
+def test_a_fully_evidenced_claim_is_contested() -> None:
+    from grace import dispute as d
+
+    engine, ledger, _, authority = build()
+    payment = engine.authorise(authority, payee(), 180.0)
+    engine.capture(payment)
+
+    claim = d.Dispute(
+        "dsp_1", payment.id, "MERCHANDISE_NOT_RECEIVED", 180.0, "USD", "never arrived", "2026-11-04"
+    )
+    attached = [
+        d.Evidence("e1", "delivery_proof", "carrier scan", "logistics"),
+        d.Evidence("e2", "delivery_date", "delivered 14 Oct", "logistics"),
+        d.Evidence("e3", "customer_contact", "customer confirmed", "inbox"),
+    ]
+    result = d.assess(claim, d.gather(claim, ledger.transitions(payment.id), attached))
+    assert result.recommendation == "contest"
+    assert result.coverage == 1.0
+    assert "not assert any fact" in result.narrative
+
+
+def test_a_claim_without_the_decisive_evidence_is_not_fought() -> None:
+    from grace import dispute as d
+
+    engine, ledger, _, authority = build()
+    payment = engine.authorise(authority, payee(), 180.0)
+
+    claim = d.Dispute(
+        "dsp_2", payment.id, "MERCHANDISE_NOT_RECEIVED", 180.0, "USD", "never arrived", "2026-11-04"
+    )
+    result = d.assess(claim, d.gather(claim, ledger.transitions(payment.id), []))
+    assert result.recommendation == "accept"
+    assert result.narrative == "", "an accepted claim must not file an argument"
+    assert "delivery_proof" in result.explanation
+
+
+def test_the_packet_cites_only_evidence_it_used() -> None:
+    from grace import dispute as d
+
+    engine, ledger, _, authority = build()
+    payment = engine.authorise(authority, payee(), 180.0)
+    claim = d.Dispute(
+        "dsp_3", payment.id, "MERCHANDISE_NOT_RECEIVED", 180.0, "USD", "never arrived", "2026-11-04"
+    )
+    attached = [
+        d.Evidence("e1", "delivery_proof", "carrier scan", "logistics"),
+        d.Evidence("e9", "unrelated_photo", "a photo of a cat", "somewhere"),
+    ]
+    result = d.assess(claim, d.gather(claim, ledger.transitions(payment.id), attached))
+    used = {item["id"] for item in result.packet["evidence"]}
+    assert "e1" in used
+    assert "e9" not in used, "evidence that answers nothing must not pad the packet"
+    assert result.packet["declined_evidence"]
+
+
+def test_an_unknown_reason_code_is_not_guessed_at() -> None:
+    from grace import dispute as d
+
+    engine, ledger, _, authority = build()
+    payment = engine.authorise(authority, payee(), 100.0)
+    claim = d.Dispute("dsp_4", payment.id, "SOMETHING_NEW", 100.0, "USD", "?", "2026-11-04")
+    result = d.assess(claim, d.gather(claim, ledger.transitions(payment.id), []))
+    assert result.recommendation == "accept"
+    assert "no requirement map" in result.explanation

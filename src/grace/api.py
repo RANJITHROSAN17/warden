@@ -15,6 +15,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
+from grace import dispute as dispute_mod
 from grace import receipts
 from grace.engine import Engine
 from grace.ledger import Ledger
@@ -60,6 +61,72 @@ def health() -> dict[str, Any]:
         "service": "grace",
         "paypal_mode": engine.rail.mode,
         "signing": receipts.ALGORITHM,
+    }
+
+
+# ── disputes ──────────────────────────────────────────────────────────────────────────────
+@app.get("/api/disputes")
+def list_disputes() -> dict[str, Any]:
+    return {"disputes": ledger.disputes()}
+
+
+@app.post("/api/disputes/{dispute_id}/assess")
+def assess_dispute(dispute_id: str) -> dict[str, Any]:
+    """Gather what exists, map it to the reason code, and say whether fighting is worth a fee."""
+    stored = ledger.get_dispute(dispute_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail="no such dispute")
+
+    found = dispute_mod.Dispute(
+        id=stored["id"],
+        payment_id=stored["payment_id"],
+        reason_code=stored["reason_code"],
+        amount=stored["amount"],
+        currency=stored["currency"],
+        claim=stored["claim"],
+        due_at=stored["due_at"],
+    )
+    attached = [dispute_mod.Evidence(**item) for item in stored["attached"]]
+    history = ledger.transitions(stored["payment_id"])
+    evidence = dispute_mod.gather(found, history, attached)
+    result = dispute_mod.assess(found, evidence)
+    ledger.save_assessment(dispute_id, result.public())
+    return {"assessment": result.public(), "evidence_gathered": len(evidence)}
+
+
+@app.post("/api/disputes/{dispute_id}/file")
+def file_dispute(dispute_id: str) -> dict[str, Any]:
+    """File the response. Refuses to file a contest the evidence does not support."""
+    stored = ledger.get_dispute(dispute_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail="no such dispute")
+    assessment = stored.get("assessment")
+    if not assessment:
+        raise HTTPException(status_code=409, detail="assess the dispute before filing it")
+    if assessment["recommendation"] == "accept":
+        ledger.mark_filed(dispute_id)
+        return {
+            "filed": "accepted",
+            "reason": assessment["explanation"],
+            "note": "accepting is a decision too, and it is recorded.",
+        }
+    signed = receipts.sign(
+        {
+            "receipt_version": 1,
+            "kind": "dispute_response",
+            "dispute": assessment["dispute_id"],
+            "recommendation": assessment["recommendation"],
+            "packet": assessment["packet"],
+            "narrative": assessment["narrative"],
+        }
+    )
+    ledger.mark_filed(dispute_id)
+    return {
+        "filed": "contested",
+        "recommendation": assessment["recommendation"],
+        "packet": assessment["packet"],
+        "narrative": assessment["narrative"],
+        "receipt": signed,
     }
 
 
@@ -187,4 +254,57 @@ def seed() -> dict[str, Any]:
     late.expire(lapsed)
     created.append(lapsed.id)
 
-    return {"created": created, **ledger.summary(), **{"payments": ledger.payments()}}
+    _seed_disputes(paid.id)
+    return {
+        "created": created,
+        **ledger.summary(),
+        "payments": ledger.payments(),
+        "disputes": ledger.disputes(),
+    }
+
+
+def _seed_disputes(payment_id: str) -> None:
+    """Four chargebacks against one captured payment, each with different evidence behind it."""
+    shipped = [
+        {
+            "id": "ev_ship",
+            "kind": "delivery_proof",
+            "label": "carrier scan 4471 9920",
+            "source": "merchant: logistics",
+            "detail": "",
+        },
+        {
+            "id": "ev_date",
+            "kind": "delivery_date",
+            "label": "delivered 2026-10-14 09:12",
+            "source": "merchant: logistics",
+            "detail": "",
+        },
+        {
+            "id": "ev_msg",
+            "kind": "customer_contact",
+            "label": "customer confirmed receipt",
+            "source": "merchant: inbox",
+            "detail": "",
+        },
+    ]
+    cases = [
+        ("dsp_001", "MERCHANDISE_NOT_RECEIVED", "The item never arrived.", shipped),
+        ("dsp_002", "MERCHANDISE_NOT_RECEIVED", "The item never arrived.", shipped[:1]),
+        ("dsp_003", "MERCHANDISE_NOT_RECEIVED", "The item never arrived.", []),
+        ("dsp_004", "UNAUTHORISED", "I do not recognise this charge.", []),
+    ]
+    for dispute_id, reason_code, claim, attached in cases:
+        found = dispute_mod.Dispute(
+            id=dispute_id,
+            payment_id=payment_id,
+            reason_code=reason_code,
+            amount=180.0,
+            currency="USD",
+            claim=claim,
+            due_at="2026-11-04",
+        )
+        ledger.save_dispute(found, attached)
+        history = ledger.transitions(payment_id)
+        evidence = dispute_mod.gather(found, history, [dispute_mod.Evidence(**a) for a in attached])
+        ledger.save_assessment(dispute_id, dispute_mod.assess(found, evidence).public())

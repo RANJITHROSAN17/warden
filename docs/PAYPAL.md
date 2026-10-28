@@ -74,3 +74,40 @@ of every transition already being signed.
 > PayPal has built world-class machinery for deciding whether money may move. Grace covers the
 > window after that decision — what happens when the payment half-happens — and leaves a receipt for
 > every move, including the ones it refused to make.
+
+---
+
+# Appendix: the second half — disputes
+
+The gap is one place where a rule cannot decide. The other is the chargeback that may follow it.
+
+A dispute is a deadline, a reason code, and a demand for evidence. The work is:
+
+1. read what the cardholder claims,
+2. know what that reason code actually requires,
+3. find out which of those things exist,
+4. decide whether contesting is worth the fee,
+5. write the argument — and only the argument the evidence supports.
+
+Steps 1–4 are judgment over unstructured material; step 5 is writing. This is the clearest case in
+payments where a model is the right tool and a rule is the wrong one.
+
+## Why PayPal earns from it
+
+- **Losses.** A defended chargeback is not paid out. Fewer losses on the same volume.
+- **Cost to serve.** Each dispute is human minutes today; the packet arrives assembled.
+- **Retention.** Merchants change processor over dispute handling more often than over fees.
+- **A structural advantage nobody else has.** The evidence is strongest when it comes from the
+  payment record itself — and PayPal owns that record. A third-party dispute tool has to ask the
+  merchant for screenshots. Grace reads the authorisation and capture that PayPal already signed.
+
+That last point is the moat, and it is the reason this belongs inside the payment platform rather
+than beside it.
+
+## What it must never do
+
+- **Invent evidence.** A missing requirement is reported missing, and the recommendation falls back
+  to accepting the claim.
+- **Contest everything.** A weak case costs a fee and a merchant's trust.
+- **Let a model write the claims.** The narrative is a template over findings. A model can improve
+  the prose; it cannot add a fact.
