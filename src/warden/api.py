@@ -1,0 +1,253 @@
+"""HTTP surface. Thin on purpose: every endpoint is a call into `Gateway` and nothing else.
+
+The server holds no policy logic of its own, so the rules that apply to an HTTP caller are exactly
+the rules that apply to the CLI, the demo and the tests.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+
+from warden.agent import plan as plan_purchase
+from warden.catalog import PRODUCTS, VENDORS, item, vendor
+from warden.gateway import Gateway
+from warden.ledger import Ledger
+
+WEB_DIR = Path(__file__).resolve().parents[2] / "web"
+
+app = FastAPI(title="Warden", version="0.1.0", description="Spend authority for AI agents.")
+gateway = Gateway(ledger=Ledger(os.environ.get("WARDEN_DB", "warden.db")))
+
+
+class MandateIn(BaseModel):
+    purpose: str = Field(..., examples=["Q4 office restock"])
+    ceiling: float = Field(500.0, gt=0)
+    currency: str = "USD"
+    categories: list[str] = ["office_supplies"]
+    min_vendor_age_days: int = 30
+    intent_threshold: float = 0.55
+    ttl_hours: int = 24
+
+
+class ItemIn(BaseModel):
+    sku: str
+    qty: int = 1
+
+
+class PurchaseIn(BaseModel):
+    mandate_id: str
+    vendor_id: str
+    items: list[ItemIn]
+    stated_intent: str
+
+
+class GoalIn(BaseModel):
+    mandate_id: str
+    goal: str
+
+
+class GrantIn(BaseModel):
+    issued_by: str = "finance@example.com"
+    reason: str = "approved out of band"
+
+
+@app.get("/api/health")
+def health() -> dict[str, Any]:
+    return {
+        "ok": True,
+        "paypal_mode": gateway.rail.mode,
+        "judge": gateway.judge.name,
+        "signing": "HMAC-SHA256",
+    }
+
+
+@app.get("/api/catalog")
+def catalog() -> dict[str, Any]:
+    return {
+        "vendors": [vendor(v).public() for v in VENDORS],
+        "products": PRODUCTS,
+    }
+
+
+@app.post("/api/mandates")
+def create_mandate(body: MandateIn) -> dict[str, Any]:
+    mandate = gateway.issue_mandate(
+        purpose=body.purpose,
+        ceiling=body.ceiling,
+        currency=body.currency,
+        categories=body.categories,
+        min_vendor_age_days=body.min_vendor_age_days,
+        intent_threshold=body.intent_threshold,
+        ttl_hours=body.ttl_hours,
+    )
+    return mandate.public()
+
+
+@app.post("/api/demo/seed")
+def seed() -> dict[str, Any]:
+    """Run the five demo scenarios into the live ledger so the UI has something to show.
+
+    The inputs are scripted; the decisions are not. Everything here goes through `gateway.attempt`
+    exactly as a real caller would.
+    """
+    mandate = gateway.issue_mandate(
+        purpose="Q4 office restock",
+        ceiling=500.0,
+        categories=["office_supplies"],
+        min_vendor_age_days=30,
+    )
+    script = [
+        (
+            "1 restock paper",
+            "V-ACME",
+            [("SKU-PAPER", 5), ("SKU-PENS", 2)],
+            "restock printer paper and pens for the office",
+        ),
+        ("2 drift", "V-ACME", [("SKU-ESPRESSO", 1)], "restock printer paper for the office"),
+        ("3 over ceiling", "V-ACME", [("SKU-TONER", 6)], "restock printer toner for the office"),
+        ("4 new vendor", "V-FRESH", [("SKU-PAPER", 4)], "restock printer paper for the office"),
+    ]
+    created: list[dict[str, Any]] = []
+    over_id = None
+    for label, vendor_id, skus, intent in script:
+        decision, decision_id = gateway.attempt(
+            mandate, vendor(vendor_id), [item(sku, qty) for sku, qty in skus], intent
+        )
+        created.append(
+            {"label": label, "decision_id": decision_id, "outcome": decision.outcome.value}
+        )
+        if label.startswith("3"):
+            over_id = decision_id
+    if over_id:
+        issued = gateway.grant(over_id, "finance@example.com", "Q4 toner budget approved")
+        decision, decision_id = gateway.attempt(
+            mandate,
+            vendor("V-ACME"),
+            [item("SKU-TONER", 6)],
+            "restock printer toner for the office",
+            grant=issued,
+        )
+        created.append(
+            {"label": "5 granted", "decision_id": decision_id, "outcome": decision.outcome.value}
+        )
+    return {"mandate_id": mandate.id, "created": created, **ledger()}
+
+
+@app.get("/api/mandates")
+def list_mandates() -> list[dict[str, Any]]:
+    return gateway.ledger.list_mandates()
+
+
+@app.post("/api/purchases")
+def purchase(body: PurchaseIn) -> dict[str, Any]:
+    stored = gateway.ledger.get_mandate(body.mandate_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail="unknown mandate")
+    mandate = _mandate_from(stored)
+    try:
+        vendor_obj = vendor(body.vendor_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=400, detail=f"unknown vendor {body.vendor_id}") from exc
+    line_items = []
+    for entry in body.items:
+        try:
+            line_items.append(item(entry.sku, entry.qty))
+        except KeyError as exc:
+            raise HTTPException(status_code=400, detail=f"unknown sku {entry.sku}") from exc
+    decision, decision_id = gateway.attempt(mandate, vendor_obj, line_items, body.stated_intent)
+    return {"decision_id": decision_id, **decision.public()}
+
+
+@app.post("/api/purchases/plan")
+def plan_and_purchase(body: GoalIn) -> dict[str, Any]:
+    """Let the agent decide what to buy, then put its decision through the same funnel."""
+    stored = gateway.ledger.get_mandate(body.mandate_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail="unknown mandate")
+    plan = plan_purchase(body.goal)
+    mandate = _mandate_from(stored)
+    try:
+        vendor_obj = vendor(plan.vendor_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=400, detail="agent chose unknown vendor") from exc
+    decision, decision_id = gateway.attempt(mandate, vendor_obj, plan.items, plan.stated_intent)
+    return {
+        "decision_id": decision_id,
+        "plan": {
+            "vendor_id": plan.vendor_id,
+            "items": [entry.public() for entry in plan.items],
+            "stated_intent": plan.stated_intent,
+            "planner": plan.planner,
+        },
+        **decision.public(),
+    }
+
+
+@app.post("/api/decisions/{decision_id}/grant")
+def grant(decision_id: str, body: GrantIn) -> dict[str, Any]:
+    try:
+        issued = gateway.grant(decision_id, body.issued_by, body.reason)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"grant_id": issued.id, "rule_id": issued.rule_id, "expires_at": issued.expires_at}
+
+
+@app.post("/api/decisions/{decision_id}/capture")
+def capture(decision_id: str) -> dict[str, Any]:
+    try:
+        return gateway.capture(decision_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/ledger")
+def ledger() -> dict[str, Any]:
+    return {"rows": gateway.ledger.rows(), "counts": gateway.ledger.counts()}
+
+
+@app.get("/api/decisions/{decision_id}")
+def decision(decision_id: str) -> dict[str, Any]:
+    receipt = gateway.ledger.receipt(decision_id)
+    if receipt is None:
+        raise HTTPException(status_code=404, detail="no such decision")
+    return receipt
+
+
+@app.get("/api/decisions/{decision_id}/verify")
+def verify(decision_id: str) -> JSONResponse:
+    ok, message = gateway.ledger.verify(decision_id)
+    return JSONResponse({"ok": ok, "message": message, "decision_id": decision_id})
+
+
+def _mandate_from(stored: dict[str, Any]):
+    from warden.models import Mandate
+
+    return Mandate(
+        id=stored["id"],
+        purpose=stored["purpose"],
+        ceiling=float(stored["ceiling"]),
+        currency=stored["currency"],
+        allowed_categories=tuple(stored["allowed_categories"]),
+        min_vendor_age_days=int(stored["min_vendor_age_days"]),
+        allowed_vendors=tuple(stored.get("allowed_vendors") or ()),
+        intent_threshold=float(stored["intent_threshold"]),
+        expires_at=stored["expires_at"],
+        issued_by=stored["issued_by"],
+    )
+
+
+if WEB_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
+
+    @app.get("/")
+    def index() -> FileResponse:
+        return FileResponse(str(WEB_DIR / "index.html"))

@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Warden — spend authority for AI agents</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@32.2.2/styles/ag-grid.css" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@32.2.2/styles/ag-theme-quartz-dark.css" />
+<style>
+  :root { --bg:#0b0d12; --panel:#121621; --line:#1f2634; --ink:#e8edf7; --dim:#8b97ad;
+          --allow:#2fbf71; --hold:#e0a800; --deny:#e5484d; --accent:#5b8def; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:14px/1.5 ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  header { display:flex; align-items:baseline; gap:14px; padding:18px 22px 10px; }
+  h1 { font-size:19px; margin:0; letter-spacing:.2px; }
+  .tag { color:var(--dim); font-size:13px; }
+  .badge { font-size:11px; padding:2px 8px; border:1px solid var(--line); border-radius:999px; color:var(--dim); }
+  .badge.sim { border-color:#3a4152; }
+  main { padding: 0 22px 26px; }
+  .strip { display:flex; gap:10px; margin:10px 0 14px; flex-wrap:wrap; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; min-width:128px; }
+  .card .k { color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.8px; }
+  .card .v { font-size:22px; font-weight:600; margin-top:2px; }
+  .allow { color:var(--allow); } .hold { color:var(--hold); } .deny { color:var(--deny); }
+  button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:9px 14px;
+           font-weight:600; cursor:pointer; }
+  button.ghost { background:transparent; border:1px solid var(--line); color:var(--ink); }
+  #grid { height: calc(100vh - 300px); min-height:340px; width:100%; }
+  .chip { padding:2px 8px; border-radius:999px; font-size:11px; font-weight:700; letter-spacing:.4px; }
+  .chip.allow { background:rgba(47,191,113,.16); color:var(--allow); }
+  .chip.hold  { background:rgba(224,168,0,.16);  color:var(--hold); }
+  .chip.deny  { background:rgba(229,72,77,.16);   color:var(--deny); }
+  table.fallback { width:100%; border-collapse:collapse; font-size:13px; }
+  table.fallback th { text-align:left; color:var(--dim); font-weight:500; border-bottom:1px solid var(--line);
+                      padding:8px 10px; font-size:11px; text-transform:uppercase; letter-spacing:.7px; }
+  table.fallback td { padding:8px 10px; border-bottom:1px solid #171c27; vertical-align:top; }
+  .mono { font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; color:var(--dim); }
+  .note { color:var(--dim); font-size:12px; margin-top:10px; }
+  .note b { color:var(--ink); font-weight:600; }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Warden</h1>
+  <span class="tag">spend authority &amp; proof receipts for AI agents</span>
+  <span class="badge sim" id="mode">mode: …</span>
+  <span class="badge" id="judge">judge: …</span>
+</header>
+<main>
+  <div class="strip">
+    <div class="card"><div class="k">Allowed</div><div class="v allow" id="n-allow">0</div></div>
+    <div class="card"><div class="k">Held</div><div class="v hold" id="n-hold">0</div></div>
+    <div class="card"><div class="k">Denied</div><div class="v deny" id="n-deny">0</div></div>
+    <div class="card" style="flex:1">
+      <div class="k">What this shows</div>
+      <div style="color:var(--dim);font-size:12.5px;margin-top:4px">
+        Every agent payment, allowed or refused, with the rule that decided it and a signed receipt
+        you can re-verify. Click a row for the full payload.
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px">
+      <button id="seed">Run the five scenarios</button>
+      <button class="ghost" id="refresh">Refresh</button>
+    </div>
+  </div>
+  <div id="grid" class="ag-theme-quartz-dark"></div>
+  <p class="note">
+    <b>AG Grid</b> is the ledger, not decoration: filter <span class="mono">outcome = hold</span> to see
+    everything the agent wanted to buy and was stopped from buying, with the smallest change that would
+    have allowed it.
+  </p>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/ag-grid-community@32.2.2/dist/ag-grid-community.min.js"></script>
+<script>
+const state = { rows: [], counts: { allow: 0, hold: 0, deny: 0 } };
+
+async function api(path, options) {
+  const res = await fetch(path, Object.assign({ headers: { "Content-Type": "application/json" } }, options));
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.status);
+  return res.json();
+}
+
+function chip(value) {
+  return `<span class="chip ${value}">${value.toUpperCase()}</span>`;
+}
+
+function renderCounts() {
+  document.getElementById("n-allow").textContent = state.counts.allow ?? 0;
+  document.getElementById("n-hold").textContent = state.counts.hold ?? 0;
+  document.getElementById("n-deny").textContent = state.counts.deny ?? 0;
+}
+
+function fallbackTable() {
+  const rows = state.rows.map(r => `
+    <tr>
+      <td>${chip(r.outcome)}</td>
+      <td>${r.vendor || "—"}</td>
+      <td>${r.amount.toFixed(2)} ${r.currency}</td>
+      <td>${(r.reason || "").replace(/</g, "&lt;")}</td>
+      <td class="mono">${r.id}</td>
+    </tr>`).join("");
+  document.getElementById("grid").innerHTML = `
+    <table class="fallback">
+      <thead><tr><th>Outcome</th><th>Vendor</th><th>Amount</th><th>Decided by</th><th>Receipt</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="5" style="color:#8b97ad">No decisions yet — press “Run the five scenarios”.</td></tr>'}</tbody>
+    </table>
+    <p class="note">AG Grid could not load (offline or blocked), so this is the plain renderer.
+    The same data is served by <span class="mono">GET /api/ledger</span>.</p>`;
+}
+
+let gridApi = null;
+function renderGrid() {
+  if (!window.agGrid) { fallbackTable(); return; }
+  if (!gridApi) {
+    const columnDefs = [
+      { field: "outcome", headerName: "Decision", width: 120,
+        cellRenderer: p => chip(p.value) },
+      { field: "vendor", headerName: "Vendor", flex: 1, minWidth: 150 },
+      { field: "amount", headerName: "Amount", width: 130,
+        valueFormatter: p => `${p.value.toFixed(2)} ${p.data.currency}` },
+      { field: "intent_score", headerName: "Intent match", width: 130,
+        valueFormatter: p => p.value?.toFixed(2),
+        cellStyle: p => ({ color: p.value < 0.55 ? "#e0a800" : "#8b97ad" }) },
+      { field: "reason", headerName: "Decided by", flex: 2, minWidth: 280 },
+      { field: "mode", headerName: "Rail", width: 110 },
+      { field: "id", headerName: "Receipt", width: 170, cellClass: "mono" },
+    ];
+    gridApi = agGrid.createGrid(document.getElementById("grid"), {
+      columnDefs, rowData: state.rows,
+      defaultColDef: { sortable: true, resizable: true, filter: true },
+      quickFilterText: "",
+      rowHeight: 40, headerHeight: 38,
+      getRowId: p => p.data.id,
+      onRowClicked: async e => {
+        const receipt = await api(`/api/decisions/${e.data.id}`);
+        alert(JSON.stringify(receipt, null, 2).slice(0, 2000));
+      },
+    });
+  } else {
+    gridApi.setGridOption("rowData", state.rows);
+  }
+}
+
+async function refresh() {
+  const data = await api("/api/ledger");
+  state.rows = data.rows; state.counts = data.counts;
+  renderCounts(); renderGrid();
+}
+
+async function boot() {
+  try {
+    const health = await api("/api/health");
+    document.getElementById("mode").textContent = `paypal: ${health.paypal_mode}`;
+    document.getElementById("judge").textContent = `judge: ${health.judge}`;
+  } catch (e) {
+    document.getElementById("mode").textContent = "API not running";
+  }
+  try { await refresh(); } catch (e) { fallbackTable(); }
+}
+
+document.getElementById("seed").onclick = async () => {
+  try { await api("/api/demo/seed", { method: "POST" }); await refresh(); }
+  catch (e) { alert("Seed failed: " + e.message); }
+};
+document.getElementById("refresh").onclick = () => refresh();
+boot();
+</script>
+</body>
+</html>

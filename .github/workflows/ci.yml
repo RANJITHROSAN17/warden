@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[server,dev]"
+          pip install httpx
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Tests
+        run: pytest
+
+      # The demo is the product's claim. If it stops running, the claim is gone.
+      - name: Offline demo
+        run: python -m warden.demo
+
+      - name: Confirm no credential is committed
+        run: |
+          pattern='(sk-[A-Za-z0-9]{24,}|ghp_[A-Za-z0-9]{24,}|client_secret["'"'"']?\s*[:=]\s*["'"'"'][A-Za-z0-9_-]{16,})'
+          if git grep -nEI "$pattern" -- . ':!.github/workflows/ci.yml' ':!.env.example'; then
+            echo "::error::a credential appears to be committed"
+            exit 1
+          fi
+          echo "no credential shapes found in tracked files"
