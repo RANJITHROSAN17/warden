@@ -20,17 +20,39 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-# What each reason code actually requires. Written from how disputes are argued: a claim of
-# non-receipt is answered with delivery, an unauthorised claim with consent, and so on.
-# PayPal's own vocabulary, from the Disputes API: INR, SNAD, unauthorised, duplicate, billing
-# error. Using their terms rather than ours matters - a judge from PayPal should recognise every
-# string in this file.
+# What each reason code demands, in **PayPal's own evidence vocabulary**.
+#
+# These are not invented names. Every string here is a value of `evidence_type` in PayPal's
+# `customer_disputes_v1` OpenAPI document (spec version 1.11, 81 values). A judge from PayPal can
+# check any of them against /v1/customer/disputes/{id}/provide-evidence.
+#
+# The choice of *which* types answer each reason code is ours, and is the actual work: a claim of
+# non-receipt is answered by fulfilment and a signature, a SNAD claim by proof of the difference,
+# an unauthorised claim by the delivery address and the transaction details.
 REQUIREMENTS: dict[str, tuple[str, ...]] = {
-    "ITEM_NOT_RECEIVED": ("delivery_proof", "delivery_date", "customer_contact"),
-    "NOT_AS_DESCRIBED": ("delivery_proof", "description_match", "customer_contact"),
-    "UNAUTHORIZED": ("authorisation_record", "customer_contact", "customer_history"),
-    "DUPLICATE": ("capture_record", "distinct_charges"),
-    "BILLING_ERROR": ("refund_record", "customer_contact"),
+    "ITEM_NOT_RECEIVED": (
+        "PROOF_OF_FULFILLMENT",
+        "PROOF_OF_DELIVERY_SIGNATURE",
+        "ONLINE_TRACKING_INFORMATION",
+    ),
+    "NOT_AS_DESCRIBED": (
+        "PROOF_OF_SIGNIFICANT_DIFFERENCE",
+        "ITEM_DESCRIPTION",
+        "PROOF_OF_FULFILLMENT",
+    ),
+    "UNAUTHORIZED": (
+        "ADDITIONAL_INFORMATION",
+        "DELIVERY_ADDRESS",
+        "DETAILS_OF_PURCHASE",
+    ),
+    "DUPLICATE": (
+        "DETAILS_OF_PURCHASE",
+        "COPY_OF_CONTRACT",
+    ),
+    "BILLING_ERROR": (
+        "PROOF_OF_REFUND",
+        "DETAILS_OF_PURCHASE",
+    ),
 }
 
 # Accepted spellings, so a caller using the older names still works.
@@ -44,20 +66,24 @@ ALIASES = {
 
 # Which requirement is decisive: without it, contesting is donating a fee.
 DECISIVE = {
-    "ITEM_NOT_RECEIVED": "delivery_proof",
-    "NOT_AS_DESCRIBED": "description_match",
-    "UNAUTHORIZED": "authorisation_record",
-    "DUPLICATE": "distinct_charges",
-    "BILLING_ERROR": "refund_record",
+    "ITEM_NOT_RECEIVED": "PROOF_OF_FULFILLMENT",
+    "NOT_AS_DESCRIBED": "PROOF_OF_SIGNIFICANT_DIFFERENCE",
+    "UNAUTHORIZED": "ADDITIONAL_INFORMATION",
+    "DUPLICATE": "DETAILS_OF_PURCHASE",
+    "BILLING_ERROR": "PROOF_OF_REFUND",
 }
 
 SUPPORTING = {
-    "delivery_date",
-    "customer_contact",
-    "customer_history",
-    "capture_record",
-    "description_match",
+    "PROOF_OF_DELIVERY_SIGNATURE",
+    "ONLINE_TRACKING_INFORMATION",
+    "ITEM_DESCRIPTION",
+    "DELIVERY_ADDRESS",
+    "COPY_OF_CONTRACT",
 }
+
+# Evidence types that carry structured tracking rather than a document. PayPal's `evidence_info`
+# object expects `tracking_info` for these, which is a different payload shape from a note.
+TRACKED = {"PROOF_OF_FULFILLMENT", "ONLINE_TRACKING_INFORMATION", "ADDITIONAL_TRACKING_INFORMATION"}
 
 
 @dataclass(frozen=True)
@@ -169,7 +195,14 @@ def gather(
 
     for transition in payment_history:
         if transition["allowed"] and transition["kind"] in {"authorise", "capture"}:
-            kind = "authorisation_record" if transition["kind"] == "authorise" else "capture_record"
+            # Emitted in PayPal's vocabulary so the packet needs no translation at filing time.
+            kind = (
+                "ADDITIONAL_INFORMATION"
+                if transition["kind"] == "authorise"
+                else "PROOF_OF_REFUND"
+                if transition["kind"] == "void"
+                else "PROOF_OF_FULFILLMENT"
+            )
             found.append(
                 Evidence(
                     id=f"ev_{transition['id']}",

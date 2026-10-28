@@ -1,0 +1,42 @@
+# Render blueprint for the Grace demo.
+#
+# The judges' requirement is a demo they can actually interact with. This file is that, in one
+# click: Render builds the Dockerfile, mounts a disk for the SQLite ledger, and health-checks the
+# container, so the dashboard survives a restart with its data.
+#
+# Deploy:  Render Dashboard -> New -> Blueprint -> point at this repository.
+#
+# The PayPal credentials are deliberately marked `sync: false`: they are entered in the Render UI
+# and never committed. With no credentials the app runs the simulator, which is the same code path
+# with the rail swapped - so the demo works even if the secrets are missing.
+
+services:
+  - type: web
+    name: grace
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    region: oregon
+    autoDeploy: true
+    healthCheckPath: /api/health
+    disk:
+      name: grace-ledger
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: GRACE_DB
+        value: /data/grace.db
+      - key: GRACE_PAYPAL_MODE
+        value: auto
+      - key: GRACE_MODEL_URL
+        sync: false
+      - key: GRACE_MODEL
+        value: gpt-4o-mini
+      - key: GRACE_MODEL_KEY
+        sync: false
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: GRACE_SIGNING_KEY
+        generateValue: true

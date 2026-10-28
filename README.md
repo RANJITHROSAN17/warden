@@ -168,6 +168,53 @@ genuine   {"ok": true,  "message": "signature matches"}
 altered   {"ok": false, "message": "signature does not match payload - receipt was modified"}
 ```
 
+## Written against PayPal's own spec
+
+`openapi/customer_disputes_v1.json` is a vendored copy of PayPal's published `customer_disputes_v1`
+document (version 1.11, from `paypal/paypal-rest-api-specifications`). `src/grace/paypal_disputes.py`
+is written from it — 7 of its 14 endpoints, the real `evidence_type` vocabulary, the real
+`offer_type` enum, and the multipart body `provide-evidence` actually expects:
+
+```
+POST /v1/customer/disputes/PP-D-27803/provide-evidence
+Content-Type: multipart/form-data
+  input = {"evidences":[{"evidence_type":"PROOF_OF_FULFILLMENT",
+                         "evidence_info":{"tracking_info":[
+                           {"carrier_name":"FEDEX","tracking_number":"122533485"}]},
+                         "notes":"Shipped 2026-10-12, signed for at the delivery address."}]}
+```
+
+An evidence type PayPal does not define is refused before it reaches the network:
+
+```
+422  {"name":"INVALID_PARAMETER_VALUE","field":"evidences.evidence_type"}
+```
+
+Two tests keep that true: every type we emit must be in the spec, and the client's enums must still
+match `openapi/customer_disputes_v1.json`. If PayPal ships v1.12, the test fails instead of the
+request.
+
+```bash
+make spec    # re-fetch the spec and print how many paths changed
+```
+
+## Partner tools
+
+Ten sponsors, all optional. Three do real work here and one is deploy infrastructure.
+
+| Tool | Where | What it does |
+|---|---|---|
+| **AG Grid** | `web/index.html` | the dispute queue as a sortable grid with a coverage bar; falls back to the plain table if the CDN is unreachable |
+| **Postman** | `postman/Grace.postman_collection.json` | 8 requests in run order, with contract assertions |
+| **Render** | `render.yaml` + `Dockerfile` | one-click hosted demo: disk-backed ledger, health check, secrets in the UI |
+| **APIMatic** | `openapi/` | PayPal's spec is vendored for client generation — **the generated client is not committed**, because generating it needs an account |
+
+Not used, and why: Zapier (a hop with no gain), Elastic (SQLite and a grid are enough at this
+scale), Bryntum (a scheduler for project work — wrong tool), Channel3 (vendors are known accounts,
+not a catalogue), KERNEL (cloud browsers would let the agent fetch a courier page itself — the one
+to add next), Astropods (deployment, not product). Each is named in `docs/PARTNERS.md` rather than
+quietly omitted.
+
 ## Run it
 
 ```bash

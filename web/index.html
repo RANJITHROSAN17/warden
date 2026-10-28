@@ -4,6 +4,11 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Grace — character, not ceilings</title>
+<!-- AG Grid Community, sponsor tool. The plain table below is the fallback: if this script cannot
+     load (offline preview, blocked CDN) the dispute list still renders and still works. -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@32.2.0/styles/ag-grid.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@32.2.0/styles/ag-theme-quartz-dark.css">
+<script src="https://cdn.jsdelivr.net/npm/ag-grid-community@32.2.0/dist/ag-grid-community.min.js"></script>
 <style>
   :root { --bg:#0b0d12; --panel:#121621; --line:#1f2634; --ink:#e8edf7; --dim:#8b97ad;
           --ok:#2fbf71; --warn:#e0a800; --bad:#e5484d; --open:#5b8def; }
@@ -62,6 +67,7 @@
   .note { color:var(--dim); font-size:12px; margin-top:12px; }
   .note b { color:var(--ink); }
   /* character */
+  #dispute-grid { border:1px solid var(--line); border-radius:10px; overflow:hidden; }
   .chars { display:flex; gap:10px; flex-wrap:wrap; margin-top:10px; }
   .char { flex:1 1 260px; background:var(--panel); border:1px solid var(--line);
           border-radius:10px; padding:12px 14px; }
@@ -166,6 +172,7 @@
     <thead><tr><th>Dispute</th><th>Reason</th><th>Amount</th><th>Evidence</th><th>Recommendation</th><th></th></tr></thead>
     <tbody id="dispute-rows"><tr><td colspan="6" class="mono">run the cases to see disputes.</td></tr></tbody>
   </table>
+  <div id="dispute-grid" class="ag-theme-quartz-dark" style="display:none;height:230px;margin-top:10px"></div>
   <div id="dispute-panel"></div>
 
   <p class="note">
@@ -321,6 +328,56 @@ function renderDisputes() {
   }).join("");
   document.getElementById("dispute-rows").innerHTML =
     rows || '<tr><td colspan="6" class="mono">run the cases to see disputes.</td></tr>';
+  if (disputeGrid) {
+    disputeGrid.setGridOption("rowData", (state.disputes || []).map(d => Object.assign({}, d)));
+  }
+}
+
+// ── AG Grid (sponsor) ────────────────────────────────────────────────────────────────────────
+// Sorting, column filters and a live "coverage" bar on a column AG Grid can order numerically.
+// This is the one place a real grid beats a table: the queue is sorted by deadline, and a merchant
+// wants to re-sort it by exposure. If the CDN is unavailable the table above stays.
+let disputeGrid = null;
+
+function upgradeDisputesToGrid() {
+  if (typeof agGrid === "undefined" || disputeGrid) return;
+  const table = document.getElementById("dispute-rows").closest("table");
+  const host = document.getElementById("dispute-grid");
+  table.style.display = "none";
+  host.style.display = "block";
+
+  disputeGrid = agGrid.createGrid(host, {
+    columnDefs: [
+      { field: "id", headerName: "Dispute", width: 110, cellClass: "mono" },
+      { field: "reason_code", headerName: "Reason", flex: 1,
+        valueFormatter: p => String(p.value || "").replace(/_/g, " ").toLowerCase() },
+      { field: "amount", headerName: "Amount", width: 120, type: "numericColumn",
+        valueFormatter: p => `${Number(p.value).toFixed(2)} ${p.data.currency}` },
+      { field: "coverage", headerName: "Coverage", width: 170,
+        cellRenderer: p => {
+          const pct = p.value == null ? 0 : Math.round(p.value * 100);
+          const colour = pct >= 99 ? "var(--ok)" : pct > 0 ? "var(--warn)" : "var(--bad)";
+          return `<div style="display:flex;gap:6px;align-items:center">
+            <span style="flex:1;height:5px;background:#1b2130;border-radius:3px;overflow:hidden">
+              <span style="display:block;height:100%;width:${pct}%;background:${colour}"></span></span>
+            <span style="width:34px;text-align:right">${pct}%</span></div>`;
+        } },
+      { field: "recommendation", headerName: "Grace says", width: 150,
+        cellRenderer: p => {
+          const label = { contest: "CONTEST", contest_partial: "CONTEST PARTLY", accept: "ACCEPT" };
+          const colour = { contest: "var(--ok)", contest_partial: "var(--warn)", accept: "var(--dim)" };
+          return `<span style="color:${colour[p.value] || "var(--dim)"};font-weight:700;font-size:11px">
+            ${label[p.value] || "UNASSESSED"}</span>`;
+        } },
+      { field: "due_at", headerName: "Due", width: 110, cellClass: "mono" },
+    ],
+    rowData: (state.disputes || []).map(d => Object.assign({}, d)),
+    defaultColDef: { sortable: true, filter: true, resizable: true },
+    rowSelection: "single",
+    onRowClicked: event => assessDispute(event.data.id),
+    headerHeight: 34,
+    rowHeight: 34,
+  });
 }
 
 async function assessDispute(disputeId) {
@@ -391,6 +448,7 @@ async function refresh() {
   renderRows();
   renderDisputes();
   renderCharacter();
+  try { upgradeDisputesToGrid(); } catch (e) { /* the table is still there */ }
 }
 
 async function boot() {

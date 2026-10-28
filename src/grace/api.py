@@ -23,7 +23,27 @@ from grace.ledger import Ledger
 from grace.models import Authority, Payee
 from grace.rail import make_rail
 
-WEB = Path(__file__).resolve().parents[2] / "web" / "index.html"
+
+def _find_web() -> Path:
+    """Locate the dashboard whether we run from source or from an installed wheel.
+
+    An installed package lives in site-packages, so the source-tree path does not exist in the
+    container. Check, in order: an explicit override, the working directory, the source tree, then
+    the copy shipped inside the package.
+    """
+    candidates = [
+        Path(os.environ["GRACE_WEB"]) if os.environ.get("GRACE_WEB") else None,
+        Path.cwd() / "web" / "index.html",
+        Path(__file__).resolve().parents[2] / "web" / "index.html",
+        Path(__file__).resolve().parent / "web" / "index.html",
+    ]
+    for candidate in candidates:
+        if candidate and candidate.exists():
+            return candidate
+    return Path("web/index.html")
+
+
+WEB = _find_web()
 
 app = FastAPI(title="Grace", version="0.1.0", docs_url="/api/docs")
 
@@ -303,21 +323,21 @@ def _seed_disputes(payment_id: str) -> None:
     shipped = [
         {
             "id": "ev_ship",
-            "kind": "delivery_proof",
+            "kind": "PROOF_OF_FULFILLMENT",
             "label": "carrier scan 4471 9920",
             "source": "merchant: logistics",
             "detail": "",
         },
         {
             "id": "ev_date",
-            "kind": "delivery_date",
+            "kind": "PROOF_OF_DELIVERY_SIGNATURE",
             "label": "delivered 2026-10-14 09:12",
             "source": "merchant: logistics",
             "detail": "",
         },
         {
             "id": "ev_msg",
-            "kind": "customer_contact",
+            "kind": "ONLINE_TRACKING_INFORMATION",
             "label": "customer confirmed receipt",
             "source": "merchant: inbox",
             "detail": "",

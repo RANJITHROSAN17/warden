@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from grace import character as character_mod
 from grace import compensate
 from grace import dispute as dispute_mod
+from grace import paypal_disputes as paypal_disputes_mod
 from grace import verify as verify_mod
 from grace.engine import Engine
 from grace.ledger import Ledger
@@ -230,14 +231,20 @@ def story_defend(mode: str = "auto") -> int:
             "The item never arrived.",
             [
                 dispute_mod.Evidence(
-                    "ev_ship", "delivery_proof", "carrier scan 4471 9920", "merchant: logistics"
+                    "ev_ship",
+                    "PROOF_OF_FULFILLMENT",
+                    "carrier scan 4471 9920",
+                    "merchant: logistics",
                 ),
                 dispute_mod.Evidence(
-                    "ev_date", "delivery_date", "delivered 2026-10-14 09:12", "merchant: logistics"
+                    "ev_date",
+                    "PROOF_OF_DELIVERY_SIGNATURE",
+                    "delivered 2026-10-14 09:12",
+                    "merchant: logistics",
                 ),
                 dispute_mod.Evidence(
                     "ev_msg",
-                    "customer_contact",
+                    "ONLINE_TRACKING_INFORMATION",
                     "customer confirmed receipt by email",
                     "merchant: inbox",
                 ),
@@ -248,7 +255,10 @@ def story_defend(mode: str = "auto") -> int:
             "The item never arrived.",
             [
                 dispute_mod.Evidence(
-                    "ev_ship", "delivery_proof", "carrier scan 4471 9920", "merchant: logistics"
+                    "ev_ship",
+                    "PROOF_OF_FULFILLMENT",
+                    "carrier scan 4471 9920",
+                    "merchant: logistics",
                 )
             ],
         ),
@@ -306,13 +316,22 @@ def story_defend(mode: str = "auto") -> int:
             ledger.transitions(paid.id),
             [
                 dispute_mod.Evidence(
-                    "ev_ship", "delivery_proof", "carrier scan 4471 9920", "merchant: logistics"
+                    "ev_ship",
+                    "PROOF_OF_FULFILLMENT",
+                    "carrier scan 4471 9920",
+                    "merchant: logistics",
                 ),
                 dispute_mod.Evidence(
-                    "ev_date", "delivery_date", "delivered 2026-10-14 09:12", "merchant: logistics"
+                    "ev_date",
+                    "PROOF_OF_DELIVERY_SIGNATURE",
+                    "delivered 2026-10-14 09:12",
+                    "merchant: logistics",
                 ),
                 dispute_mod.Evidence(
-                    "ev_msg", "customer_contact", "customer confirmed receipt", "merchant: inbox"
+                    "ev_msg",
+                    "ONLINE_TRACKING_INFORMATION",
+                    "customer confirmed receipt",
+                    "merchant: inbox",
                 ),
             ],
         ),
@@ -350,9 +369,15 @@ def story_alert(mode: str = "auto") -> int:
     print()
 
     shipped = [
-        dispute_mod.Evidence("ev_ship", "delivery_proof", "carrier scan 4471 9920", "logistics"),
-        dispute_mod.Evidence("ev_date", "delivery_date", "delivered 14 Oct 09:12", "logistics"),
-        dispute_mod.Evidence("ev_msg", "customer_contact", "customer confirmed receipt", "inbox"),
+        dispute_mod.Evidence(
+            "ev_ship", "PROOF_OF_FULFILLMENT", "carrier scan 4471 9920", "logistics"
+        ),
+        dispute_mod.Evidence(
+            "ev_date", "PROOF_OF_DELIVERY_SIGNATURE", "delivered 14 Oct 09:12", "logistics"
+        ),
+        dispute_mod.Evidence(
+            "ev_msg", "ONLINE_TRACKING_INFORMATION", "customer confirmed receipt", "inbox"
+        ),
     ]
 
     for label, attached in (("no delivery evidence", []), ("delivery evidence on file", shipped)):
@@ -574,6 +599,76 @@ def story_character(mode: str = "auto") -> int:
     return 0
 
 
+def story_file(mode: str = "auto") -> int:
+    """What actually goes on the wire, against PayPal's published contract.
+
+    The assessment in `--story defend` is our reasoning. This story is the translation of that
+    reasoning into the exact multipart body /v1/customer/disputes/{id}/provide-evidence expects,
+    using only evidence_type values that exist in PayPal's OpenAPI document.
+    """
+    import json
+
+    _header("filing a dispute, in PayPal's own contract", "simulated disputes API")
+
+    disputes = paypal_disputes_mod.make_disputes("simulated")
+    assert isinstance(disputes, paypal_disputes_mod.SimulatedDisputes)
+    disputes.add("PP-D-27803", "ITEM_NOT_RECEIVED", 180.0)
+
+    case = disputes.get_dispute("PP-D-27803")
+    print(
+        f"case      {case['dispute_id']}  {case['reason']}  "
+        f"{case['dispute_amount']['value']} {case['dispute_amount']['currency_code']}"
+    )
+    print(f"stage     {case['dispute_life_cycle_stage']}   state {case['dispute_state']}")
+    print()
+
+    evidences = [
+        {
+            "evidence_type": "PROOF_OF_FULFILLMENT",
+            "evidence_info": {
+                "tracking_info": [{"carrier_name": "FEDEX", "tracking_number": "122533485"}]
+            },
+            "notes": "Shipped 2026-10-12, signed for at the delivery address.",
+        },
+        {
+            "evidence_type": "PROOF_OF_DELIVERY_SIGNATURE",
+            "notes": "Signature captured by carrier at 09:12.",
+        },
+    ]
+
+    print("POST /v1/customer/disputes/PP-D-27803/provide-evidence")
+    print("Content-Type: multipart/form-data")
+    print("  input =")
+    for line in json.dumps({"evidences": evidences}, indent=2).splitlines():
+        print(f"    {line}")
+    print()
+
+    disputes.provide_evidence("PP-D-27803", evidences)
+    after = disputes.get_dispute("PP-D-27803")
+    print(f"result    {after['dispute_state']}")
+    print(f"evidences now on the case: {[e['evidence_type'] for e in after['evidences']]}")
+    print()
+
+    # A type PayPal does not define is refused before it ever reaches the network.
+    print("The client refuses a type that is not in the spec:")
+    try:
+        disputes.provide_evidence("PP-D-27803", [{"evidence_type": "delivery_proof"}])
+    except paypal_disputes_mod.DisputesError as exc:
+        print(f"  {exc.status}  {exc.body}")
+    print()
+
+    # Conceding is also an endpoint, and the honest one when the evidence is not there.
+    disputes.accept_claim("PP-D-27803", note="Decisive evidence does not exist.")
+    print(
+        f"accept    -> {disputes.get_dispute('PP-D-27803')['dispute_state']}"
+        "  (refunded, no fee risk, case closed)"
+    )
+    print()
+    print("Every string above is a value or a path from PayPal's customer_disputes_v1 spec.")
+    print()
+    return 0
+
+
 STORIES = {
     "full": story_full,
     "partial": story_partial,
@@ -584,6 +679,7 @@ STORIES = {
     "alert": story_alert,
     "market": story_market,
     "character": story_character,
+    "file": story_file,
 }
 
 
@@ -606,6 +702,7 @@ def _main(argv: list[str] | None = None) -> int:
                 "alert",
                 "market",
                 "character",
+                "file",
             ):
                 STORIES[name](args.rail)
             return 0

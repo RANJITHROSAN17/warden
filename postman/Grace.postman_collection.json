@@ -1,0 +1,175 @@
+{
+  "info": {
+    "name": "Grace — PayPal Disputes",
+    "_postman_id": "9a1f4c22-6d31-4f0a-9b7e-grace-paypal-disputes",
+    "description": "Grace answers a merchant's PayPal disputes. This collection exercises the real `customer_disputes_v1` contract (spec 1.11, vendored in `openapi/`) plus Grace's own decision layer.\n\n**Order matters.** Run 1 → 2 to get a token and a real dispute id from the sandbox, then 3 to see what Grace would file, then 4 to actually file it.\n\nSet `environment` to `sandbox` or `live`. Sandbox is free and is what the hackathon rules require.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "basic",
+    "basic": [
+      { "key": "username", "value": "{{paypal_client_id}}", "type": "string" },
+      { "key": "password", "value": "{{paypal_client_secret}}", "type": "string" }
+    ]
+  },
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Every collection run ends by asserting the contract held.",
+          "pm.test('a dispute id came back', () => {",
+          "  const body = pm.response.json();",
+          "  if (body.dispute_id) pm.collectionVariables.set('dispute_id', body.dispute_id);",
+          "});"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    { "key": "paypal_base", "value": "https://api-m.sandbox.paypal.com" },
+    { "key": "grace_base", "value": "http://localhost:8020" },
+    { "key": "paypal_client_id", "value": "" },
+    { "key": "paypal_client_secret", "value": "" },
+    { "key": "access_token", "value": "" },
+    { "key": "dispute_id", "value": "PP-D-27803" }
+  ],
+  "item": [
+    {
+      "name": "1. OAuth — client credentials",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200 and an access token', () => {",
+              "  pm.response.to.have.status(200);",
+              "  const token = pm.response.json().access_token;",
+              "  pm.expect(token).to.be.a('string');",
+              "  pm.collectionVariables.set('access_token', token);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/x-www-form-urlencoded" }],
+        "body": { "mode": "urlencoded", "urlencoded": [{ "key": "grant_type", "value": "client_credentials" }] },
+        "url": { "raw": "{{paypal_base}}/v1/oauth2/token", "host": ["{{paypal_base}}"], "path": ["v1", "oauth2", "token"] },
+        "description": "Sandbox tokens are free. The token is written to a collection variable so the rest of the folder needs no auth configuration."
+      }
+    },
+    {
+      "name": "2. PayPal — list disputes",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200 with an items array', () => {",
+              "  pm.response.to.have.status(200);",
+              "  pm.expect(pm.response.json()).to.have.property('items');",
+              "});",
+              "pm.test('every reason code is one PayPal defines', () => {",
+              "  const reasons = ['ITEM_NOT_RECEIVED','NOT_AS_DESCRIBED','UNAUTHORIZED','DUPLICATE','BILLING_ERROR'];",
+              "  (pm.response.json().items || []).forEach(i => {",
+              "    pm.expect(['MERCHANDISE_NOT_RECEIVED','MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED','UNAUTHORISED','DUPLICATE_TRANSACTION','CREDIT_NOT_PROCESSED','PAYMENT_NOT_RECEIVED','CHARGEBACK'].includes(i.reason)).to.be.true;",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{access_token}}" }],
+        "url": {
+          "raw": "{{paypal_base}}/v1/customer/disputes?dispute_state=REQUIRED_ACTION&page_size=10",
+          "host": ["{{paypal_base}}"],
+          "path": ["v1", "customer", "disputes"],
+          "query": [
+            { "key": "dispute_state", "value": "REQUIRED_ACTION", "description": "From components/schemas/dispute_state: OPEN_INQUIRIES | REQUIRED_ACTION | REQUIRED_OTHER_PARTY_ACTION | UNDER_PAYPAL_REVIEW | APPEALABLE | RESOLVED" },
+            { "key": "page_size", "value": "10" }
+          ]
+        },
+        "description": "Only the cases waiting on the merchant. Query parameters are validated against the spec — an unknown filter is a client error, not a silent no-op."
+      }
+    },
+    {
+      "name": "3. Grace — assess a dispute",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": { "raw": "{{grace_base}}/api/disputes/{{dispute_id}}/assess", "host": ["{{grace_base}}"], "path": ["api", "disputes", "{{dispute_id}}", "assess"] },
+        "description": "Grace's own decision layer: map the reason to the evidence it demands, gather what exists, and recommend contest / contest partly / accept with coverage and reasons. This is the part PayPal's API does not do."
+      }
+    },
+    {
+      "name": "4. PayPal — provide evidence (multipart)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "input",
+              "type": "text",
+              "value": "{\"evidences\":[{\"evidence_type\":\"PROOF_OF_FULFILLMENT\",\"evidence_info\":{\"tracking_info\":[{\"carrier_name\":\"FEDEX\",\"tracking_number\":\"122533485\"}]},\"notes\":\"Shipped 2026-10-12, signed for at the delivery address.\"}]}",
+              "contentType": "application/json",
+              "description": "The exact shape from PayPal's provide-evidence documentation: a JSON `input` part plus file1..fileN."
+            }
+          ]
+        },
+        "url": { "raw": "{{paypal_base}}/v1/customer/disputes/{{dispute_id}}/provide-evidence", "host": ["{{paypal_base}}"], "path": ["v1", "customer", "disputes", "{{dispute_id}}", "provide-evidence"] },
+        "description": "Content-Type must be multipart/form-data. Only evidence_type values from the spec are accepted — PROOF_OF_FULFILLMENT carries tracking_info; PROOF_OF_REFUND carries refund_ids."
+      }
+    },
+    {
+      "name": "5. PayPal — make offer (settle inside the window)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Authorization", "value": "Bearer {{access_token}}" }, { "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"note\": \"Partial refund for the nine descriptions delivered of twelve.\",\n  \"offer_amount\": { \"currency_code\": \"USD\", \"value\": \"90.00\" },\n  \"offer_type\": \"REFUND\"\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": { "raw": "{{paypal_base}}/v1/customer/disputes/{{dispute_id}}/make-offer", "host": ["{{paypal_base}}"], "path": ["v1", "customer", "disputes", "{{dispute_id}}", "make-offer"] },
+        "description": "offer_type is an enum: REFUND | REFUND_WITH_RETURN | REFUND_WITH_REPLACEMENT | REPLACEMENT_WITHOUT_REFUND. Grace computes the ceiling — the highest amount cheaper than contesting."
+      }
+    },
+    {
+      "name": "6. PayPal — accept claim (concede, avoid the fee)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Authorization", "value": "Bearer {{access_token}}" }, { "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\n  \"note\": \"The decisive evidence does not exist. Accepting the claim.\"\n}", "options": { "raw": { "language": "json" } } },
+        "url": { "raw": "{{paypal_base}}/v1/customer/disputes/{{dispute_id}}/accept-claim", "host": ["{{paypal_base}}"], "path": ["v1", "customer", "disputes", "{{dispute_id}}", "accept-claim"] },
+        "description": "The endpoint PayPal's own agent toolkit exposes — and the only dispute verb it exposes. In Grace this is the honest fallback whenever coverage is zero, not the only option."
+      }
+    },
+    {
+      "name": "7. Grace — character of an account (the idea)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": { "raw": "{{grace_base}}/api/character", "host": ["{{grace_base}}"], "path": ["api", "character"] },
+        "description": "One identical payment judged against three businesses. Same amount, same vendor, three answers — because the history differs."
+      }
+    },
+    {
+      "name": "8. Grace — contest the one the evidence supports",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": { "raw": "{{grace_base}}/api/disputes/{{dispute_id}}/file", "host": ["{{grace_base}}"], "path": ["api", "disputes", "{{dispute_id}}", "file"] },
+        "description": "Returns the packet and statement that would be posted, or records an acceptance when the evidence is not there. It refuses to fabricate a contest."
+      }
+    }
+  ]
+}

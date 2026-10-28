@@ -312,9 +312,9 @@ def test_a_fully_evidenced_claim_is_contested() -> None:
         "dsp_1", payment.id, "ITEM_NOT_RECEIVED", 180.0, "USD", "never arrived", "2026-11-04"
     )
     attached = [
-        d.Evidence("e1", "delivery_proof", "carrier scan", "logistics"),
-        d.Evidence("e2", "delivery_date", "delivered 14 Oct", "logistics"),
-        d.Evidence("e3", "customer_contact", "customer confirmed", "inbox"),
+        d.Evidence("e1", "PROOF_OF_FULFILLMENT", "carrier scan", "logistics"),
+        d.Evidence("e2", "PROOF_OF_DELIVERY_SIGNATURE", "delivered 14 Oct", "logistics"),
+        d.Evidence("e3", "ONLINE_TRACKING_INFORMATION", "customer confirmed", "inbox"),
     ]
     result = d.assess(claim, d.gather(claim, ledger.transitions(payment.id), attached))
     assert result.recommendation == "contest"
@@ -334,7 +334,7 @@ def test_a_claim_without_the_decisive_evidence_is_not_fought() -> None:
     result = d.assess(claim, d.gather(claim, ledger.transitions(payment.id), []))
     assert result.recommendation == "accept"
     assert result.narrative == "", "an accepted claim must not file an argument"
-    assert "delivery_proof" in result.explanation
+    assert "PROOF_OF_FULFILLMENT" in result.explanation
 
 
 def test_the_packet_cites_only_evidence_it_used() -> None:
@@ -346,7 +346,7 @@ def test_the_packet_cites_only_evidence_it_used() -> None:
         "dsp_3", payment.id, "ITEM_NOT_RECEIVED", 180.0, "USD", "never arrived", "2026-11-04"
     )
     attached = [
-        d.Evidence("e1", "delivery_proof", "carrier scan", "logistics"),
+        d.Evidence("e1", "PROOF_OF_FULFILLMENT", "carrier scan", "logistics"),
         d.Evidence("e9", "unrelated_photo", "a photo of a cat", "somewhere"),
     ]
     result = d.assess(claim, d.gather(claim, ledger.transitions(payment.id), attached))
@@ -372,7 +372,9 @@ def test_an_alert_without_the_decisive_evidence_is_refunded_inside_the_window() 
     from grace import dispute as d
 
     alert = d.Alert("alr_1", "pay_1", "ITEM_NOT_RECEIVED", 180.0, "USD", hours_remaining=17.4)
-    triage = d.triage_alert(alert, [d.Evidence("e1", "customer_contact", "chat", "inbox")])
+    triage = d.triage_alert(
+        alert, [d.Evidence("e1", "ONLINE_TRACKING_INFORMATION", "chat", "inbox")]
+    )
     assert triage.decision == "refund"
     assert triage.decisive_evidence is False
     assert "fee" in triage.explanation
@@ -382,7 +384,9 @@ def test_an_alert_with_signed_evidence_becomes_a_chargeback_worth_fighting() -> 
     from grace import dispute as d
 
     alert = d.Alert("alr_2", "pay_1", "ITEM_NOT_RECEIVED", 180.0, "USD", hours_remaining=17.4)
-    triage = d.triage_alert(alert, [d.Evidence("e1", "delivery_proof", "scan 4471", "logistics")])
+    triage = d.triage_alert(
+        alert, [d.Evidence("e1", "PROOF_OF_FULFILLMENT", "scan 4471", "logistics")]
+    )
     assert triage.decision == "contest"
 
 
@@ -477,8 +481,8 @@ def _findings():
         "dsp_1", "pay_1", "ITEM_NOT_RECEIVED", 180.0, "USD", "never arrived", "2026-11-04"
     )
     evidence = [
-        d.Evidence("ev_ship", "delivery_proof", "carrier scan 4471", "logistics"),
-        d.Evidence("ev_date", "delivery_date", "delivered 14 Oct", "logistics"),
+        d.Evidence("ev_ship", "PROOF_OF_FULFILLMENT", "carrier scan 4471", "logistics"),
+        d.Evidence("ev_date", "PROOF_OF_DELIVERY_SIGNATURE", "delivered 14 Oct", "logistics"),
     ]
     return found, d.assess(found, evidence).findings
 
@@ -636,3 +640,123 @@ def test_an_empty_history_does_not_pretend_to_know() -> None:
     verdict = c.judge(c.Character("a new account"), _request())
     assert verdict.decision in {"hold", "escalate"}
     assert any("no history" in r.detail for r in verdict.reasons)
+
+
+# ── the real PayPal Disputes API contract ───────────────────────────────────────────────────
+
+
+def test_the_client_rejects_an_evidence_type_paypal_does_not_define() -> None:
+    """The whole point of writing against the spec: invented field names fail loudly."""
+    from grace import paypal_disputes as pp
+
+    client = pp.SimulatedDisputes()
+    client.add("dsp_1", "ITEM_NOT_RECEIVED", 180.0)
+    try:
+        client.provide_evidence("dsp_1", [{"evidence_type": "delivery_proof", "notes": "made up"}])
+    except pp.DisputesError as exc:
+        assert exc.status == 422
+        assert "evidence_type" in exc.body
+    else:  # pragma: no cover
+        raise AssertionError("an invented evidence type was accepted")
+
+
+def test_evidences_we_emit_are_all_real_paypal_types() -> None:
+    from grace import dispute as d
+    from grace import paypal_disputes as pp
+
+    emitted = set()
+    for requirements in d.REQUIREMENTS.values():
+        emitted.update(requirements)
+    emitted.update(d.DECISIVE.values())
+    assert emitted <= set(pp.EVIDENCE_TYPES)
+
+
+def test_provide_evidence_moves_the_case_to_review() -> None:
+    from grace import paypal_disputes as pp
+
+    client = pp.SimulatedDisputes()
+    client.add("dsp_2", "ITEM_NOT_RECEIVED", 180.0)
+    client.provide_evidence(
+        "dsp_2",
+        [
+            {
+                "evidence_type": "PROOF_OF_FULFILLMENT",
+                "evidence_info": {
+                    "tracking_info": [{"carrier_name": "FEDEX", "tracking_number": "122533485"}]
+                },
+                "notes": "delivered",
+            }
+        ],
+    )
+    case = client.get_dispute("dsp_2")
+    assert case["dispute_state"] == "UNDER_PAYPAL_REVIEW"
+    assert case["evidences"][0]["evidence_type"] == "PROOF_OF_FULFILLMENT"
+
+
+def test_accept_claim_resolves_and_then_refuses_further_claims() -> None:
+    from grace import paypal_disputes as pp
+
+    client = pp.SimulatedDisputes()
+    client.add("dsp_3", "ITEM_NOT_RECEIVED", 180.0)
+    client.accept_claim("dsp_3", note="no evidence")
+    assert client.get_dispute("dsp_3")["dispute_state"] == "RESOLVED"
+    try:
+        client.accept_claim("dsp_3")
+    except pp.DisputesError as exc:
+        assert "ALREADY_RESOLVED" in exc.body
+    else:  # pragma: no cover
+        raise AssertionError("a resolved dispute accepted a second claim")
+
+
+def test_an_offer_must_use_one_of_paypals_offer_types() -> None:
+    from grace import paypal_disputes as pp
+
+    client = pp.SimulatedDisputes()
+    client.add("dsp_4", "ITEM_NOT_RECEIVED", 180.0)
+    client.make_offer("dsp_4", "settle", 90.0, "USD", "REFUND")
+    assert client.get_dispute("dsp_4")["offer"]["offer_amount"]["value"] == "90.00"
+    try:
+        client.make_offer("dsp_4", "settle", 90.0, "USD", "PARTIAL")
+    except pp.DisputesError as exc:
+        assert "offer_type" in exc.body
+    else:  # pragma: no cover
+        raise AssertionError("an invented offer type was accepted")
+
+
+def test_list_disputes_rejects_a_filter_the_spec_does_not_have() -> None:
+    """A live client that silently drops an unknown filter is a bug farm."""
+    from grace import paypal_disputes as pp
+
+    client = pp.PayPalDisputes(client_id="x", client_secret="y")
+    try:
+        client.list_disputes(status="OPEN")
+    except ValueError as exc:
+        assert "dispute_state" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("an unknown filter was accepted")
+
+
+def test_the_vendored_spec_matches_what_the_client_implements() -> None:
+    """The client and the checked-in OpenAPI document cannot drift apart silently."""
+    import json
+    from pathlib import Path
+
+    spec = json.loads(
+        (Path(__file__).resolve().parents[1] / "openapi" / "customer_disputes_v1.json").read_text()
+    )
+    paths = set(spec["paths"])
+    for needed in (
+        "/v1/customer/disputes",
+        "/v1/customer/disputes/{id}",
+        "/v1/customer/disputes/{id}/provide-evidence",
+        "/v1/customer/disputes/{id}/make-offer",
+        "/v1/customer/disputes/{id}/accept-claim",
+        "/v1/customer/disputes/{id}/send-message",
+        "/v1/customer/disputes/{id}/escalate",
+    ):
+        assert needed in paths
+
+    from grace import paypal_disputes as pp
+
+    assert set(pp.OFFER_TYPES) == set(spec["components"]["schemas"]["offer_type"]["enum"])
+    assert set(pp.STAGES) == set(spec["components"]["schemas"]["dispute_lifecycle_stage"]["enum"])
