@@ -70,7 +70,7 @@ def _header(title: str, rail: object) -> None:
     print()
     print(f"GRACE  -  {title}")
     print(RULE)
-    print(f"mode      {getattr(rail, 'mode', 'unknown')}")
+    print(f"mode      {getattr(rail, 'mode', rail)}")
     print(RULE)
 
 

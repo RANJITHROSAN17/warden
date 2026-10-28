@@ -5,12 +5,20 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "grace"
 version = "0.1.0"
-description = "The agent that finishes the payment: bounded compensation between authorise and capture."
+description = "Character, not ceilings: an agent payment judged against the business that made it."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Ranjith Rosan" }]
-keywords = ["payments", "paypal", "authorization", "capture", "compensation", "ai-agents"]
+keywords = [
+    "payments",
+    "paypal",
+    "agentic-commerce",
+    "risk",
+    "escrow",
+    "disputes",
+    "ai-agents",
+]
 
 dependencies = []
 
