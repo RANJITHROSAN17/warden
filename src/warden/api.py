@@ -6,6 +6,7 @@ the rules that apply to the CLI, the demo and the tests.
 
 from __future__ import annotations
 
+import copy
 import os
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from warden import receipts as receipt_store
 from warden.agent import plan as plan_purchase
 from warden.catalog import PRODUCTS, VENDORS, item, vendor
 from warden.gateway import Gateway
@@ -220,6 +222,38 @@ def decision(decision_id: str) -> dict[str, Any]:
     if receipt is None:
         raise HTTPException(status_code=404, detail="no such decision")
     return receipt
+
+
+@app.post("/api/decisions/{decision_id}/tamper-demo")
+def tamper_demo(decision_id: str) -> dict[str, Any]:
+    """Flip one field of a signed receipt and show both verdicts. For the demo, nothing else.
+
+    This never writes to the ledger and never mutates the stored receipt: it returns the real
+    verification result beside a deliberately altered copy of the same payload. A judge sees that
+    the signature catches a single-field edit, which is the evidence claim in one screen.
+    """
+    receipt = gateway.ledger.receipt(decision_id)
+    if receipt is None:
+        raise HTTPException(status_code=404, detail="no such decision")
+
+    genuine_ok, genuine_message = receipt_store.verify(receipt)
+
+    altered = copy.deepcopy(receipt)
+    payload = altered.get("payload", {})
+    before = payload.get("outcome", "hold")
+    payload["outcome"] = "allow" if before != "allow" else "deny"
+    # The signature covers the payload only, so this change alone must invalidate it.
+    altered_ok, altered_message = receipt_store.verify(altered)
+
+    return {
+        "decision_id": decision_id,
+        "changed_field": "payload.outcome",
+        "changed_from": before,
+        "changed_to": payload["outcome"],
+        "genuine": {"ok": genuine_ok, "message": genuine_message},
+        "tampered": {"ok": altered_ok, "message": altered_message},
+        "note": "The altered copy is returned, never stored. The real receipt is untouched.",
+    }
 
 
 @app.get("/api/decisions/{decision_id}/verify")

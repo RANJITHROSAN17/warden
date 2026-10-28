@@ -477,3 +477,23 @@ def test_a_prompt_injected_attempt_is_caught_without_reading_the_prompt() -> Non
     failed = {rule.rule_id for rule in decision.rules if not rule.passed}
     # Independent rules, so defeating one does not defeat the guard.
     assert {"mandate.ceiling", "vendor.approved", "vendor.maturity", "category.scope"} <= failed
+
+
+def test_the_tamper_demo_shows_both_verdicts_and_stores_nothing(tmp_path) -> None:
+    """The one screen that makes the evidence claim legible: signed = valid, one edit = invalid."""
+    from fastapi.testclient import TestClient
+
+    import warden.api as api_module
+
+    api_module.gateway = Gateway(ledger=Ledger(tmp_path / "tamper.db"))
+    client = TestClient(api_module.app)
+    seeded = client.post("/api/demo/seed").json()
+    held = next(row for row in seeded["rows"] if row["outcome"] != "allow")
+
+    before = client.get(f"/api/decisions/{held['id']}").json()
+    result = client.post(f"/api/decisions/{held['id']}/tamper-demo").json()
+    after = client.get(f"/api/decisions/{held['id']}").json()
+
+    assert result["genuine"]["ok"] is True
+    assert result["tampered"]["ok"] is False
+    assert before["sig"] == after["sig"], "the stored receipt must not be mutated by the demo"

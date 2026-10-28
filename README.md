@@ -44,6 +44,18 @@ Warden adds the two dimensions a tool flag cannot express:
 It is complementary to the Toolkit, not a replacement: put Warden in front of the PayPal tools and
 they inherit authority and evidence.
 
+## See it prove itself
+
+Open the ledger, press **Tamper demo**. Two verdicts on the same receipt, one field apart:
+
+```
+VALID     as signed          signature valid
+INVALID   one field flipped  signature does not match payload - receipt was modified or the key is wrong
+```
+
+Click any row to re-verify its signature. The altered copy is never stored — the demo returns both
+results side by side and leaves the real receipt untouched.
+
 ## Where the AI actually is
 
 Four model jobs, three of them agentic — the model acts, sees what happened, and acts again:
