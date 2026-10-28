@@ -28,6 +28,12 @@ services:
         value: /data/grace.db
       - key: GRACE_PAYPAL_MODE
         value: auto
+      - key: GRACE_EMBED_URL
+        sync: false
+      - key: GRACE_EMBED_MODEL
+        value: text-embedding-3-small
+      - key: GRACE_EMBED_KEY
+        sync: false
       - key: GRACE_MODEL_URL
         sync: false
       - key: GRACE_MODEL
@@ -40,3 +46,7 @@ services:
         sync: false
       - key: GRACE_SIGNING_KEY
         generateValue: true
+      - key: GRACE_API_TOKEN
+        generateValue: true
+      - key: PAYPAL_BASE
+        value: https://api-m.sandbox.paypal.com

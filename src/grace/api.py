@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
@@ -47,6 +47,24 @@ WEB = _find_web()
 
 app = FastAPI(title="Grace", version="0.1.0", docs_url="/api/docs")
 
+
+def require_token(x_grace_token: str = Header(default="")) -> None:
+    """Guard every state-changing route.
+
+    A demo on a public URL that lets anyone capture, void or re-seed payments is not a demo, it is
+    an incident. When GRACE_API_TOKEN is unset the app still refuses to be silently open: the
+    startup banner says so, and the token check passes only because there is nothing secret to
+    protect yet.
+    """
+    expected = os.environ.get("GRACE_API_TOKEN", "")
+    if not expected:
+        return
+    if x_grace_token != expected:
+        raise HTTPException(status_code=401, detail="missing or wrong X-Grace-Token")
+
+
+WRITE = [Depends(require_token)]
+
 ledger = Ledger(os.environ.get("GRACE_DB", ":memory:"))
 engine = Engine(ledger, make_rail(os.environ.get("GRACE_PAYPAL_MODE", "auto")))
 
@@ -70,6 +88,52 @@ def _authority_or_404(payment) -> Authority:
     return authority
 
 
+@app.on_event("startup")
+def _report_what_is_running() -> None:
+    """Say out loud which rail and which matcher are actually active.
+
+    The review's point stands: a dashboard must never imply it is using PayPal or a model when it
+    has quietly fallen back to the simulator or the lexicon.
+    """
+    from grace import character as character_mod
+
+    rail_mode = getattr(engine.rail, "mode", "unknown")
+    matcher = character_mod.matcher_from_env()
+    token = "set" if os.environ.get("GRACE_API_TOKEN") else "NOT SET - write routes are open"
+    lines = [
+        "",
+        "  Grace",
+        f"    rail      {rail_mode}"
+        + ("   (offline - no money moves)" if rail_mode == "simulated" else "   (PayPal sandbox)"),
+        f"    matcher   {matcher.name}"
+        + (
+            "   (fallback - set GRACE_EMBED_URL for semantic matching)"
+            if matcher.name == "lexical"
+            else "   (embeddings)"
+        ),
+        f"    model     {'configured' if os.environ.get('GRACE_MODEL_URL') else 'not configured'}",
+        f"    receipts  key {os.environ.get('GRACE_SIGNING_KEY_ID', 'local-dev')}",
+        f"    api token {token}",
+        "",
+    ]
+    print("\n".join(lines), flush=True)
+
+
+@app.get("/api/runtime")
+def runtime() -> dict[str, Any]:
+    """The same report, over HTTP, so the dashboard can show it instead of implying it."""
+    from grace import character as character_mod
+
+    matcher = character_mod.matcher_from_env()
+    return {
+        "rail": getattr(engine.rail, "mode", "unknown"),
+        "matcher": matcher.name,
+        "matcher_is_fallback": matcher.name == "lexical",
+        "model_configured": bool(os.environ.get("GRACE_MODEL_URL")),
+        "api_token_required": bool(os.environ.get("GRACE_API_TOKEN")),
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
     return WEB.read_text()
@@ -91,7 +155,7 @@ def list_disputes() -> dict[str, Any]:
     return {"disputes": ledger.disputes()}
 
 
-@app.post("/api/disputes/{dispute_id}/assess")
+@app.post("/api/disputes/{dispute_id}/assess", dependencies=WRITE)
 def assess_dispute(dispute_id: str) -> dict[str, Any]:
     """Gather what exists, map it to the reason code, and say whether fighting is worth a fee."""
     stored = ledger.get_dispute(dispute_id)
@@ -115,7 +179,7 @@ def assess_dispute(dispute_id: str) -> dict[str, Any]:
     return {"assessment": result.public(), "evidence_gathered": len(evidence)}
 
 
-@app.post("/api/disputes/{dispute_id}/file")
+@app.post("/api/disputes/{dispute_id}/file", dependencies=WRITE)
 def file_dispute(dispute_id: str) -> dict[str, Any]:
     """File the response. Refuses to file a contest the evidence does not support."""
     stored = ledger.get_dispute(dispute_id)
@@ -206,21 +270,21 @@ def payment_detail(payment_id: str) -> dict[str, Any]:
     }
 
 
-@app.post("/api/payments/{payment_id}/capture")
+@app.post("/api/payments/{payment_id}/capture", dependencies=WRITE)
 def capture(payment_id: str, body: CaptureIn) -> dict[str, Any]:
     payment = _payment_or_404(payment_id)
     action = engine.capture(payment, body.amount, actor=body.actor)
     return {"action": action.public(), "payment": payment.public()}
 
 
-@app.post("/api/payments/{payment_id}/void")
+@app.post("/api/payments/{payment_id}/void", dependencies=WRITE)
 def void(payment_id: str) -> dict[str, Any]:
     payment = _payment_or_404(payment_id)
     action = engine.void(payment)
     return {"action": action.public(), "payment": payment.public()}
 
 
-@app.post("/api/payments/{payment_id}/retry")
+@app.post("/api/payments/{payment_id}/retry", dependencies=WRITE)
 def retry(payment_id: str) -> dict[str, Any]:
     payment = _payment_or_404(payment_id)
     action = engine.retry(payment)
@@ -233,7 +297,7 @@ def verify(transition_id: str) -> dict[str, Any]:
     return {"transition_id": transition_id, "ok": ok, "message": message}
 
 
-@app.post("/api/transitions/{transition_id}/tamper-demo")
+@app.post("/api/transitions/{transition_id}/tamper-demo", dependencies=WRITE)
 def tamper_demo(transition_id: str) -> dict[str, Any]:
     """Flip one field of a signed receipt and show both verdicts. Nothing is stored."""
     receipt = ledger.receipt(transition_id)
@@ -257,7 +321,7 @@ def tamper_demo(transition_id: str) -> dict[str, Any]:
     }
 
 
-@app.post("/api/demo/seed")
+@app.post("/api/demo/seed", dependencies=WRITE)
 def seed() -> dict[str, Any]:
     """Run the five stories into the live ledger so the dashboard has something to show."""
     payee = Payee(id="V-ACME", name="Acme Office Supply")

@@ -21,10 +21,28 @@ class RailError(RuntimeError):
     """A readable failure from the rail. Never swallowed, never downgraded to a simulation."""
 
 
+def request_id(operation: str, reference: str, attempt: int = 0) -> str:
+    """A deterministic idempotency key for one logical operation.
+
+    Deterministic on purpose: the same (operation, reference, attempt) always yields the same key,
+    so a retried capture is recognised by PayPal as the same capture. `attempt` is part of the key
+    only because a *deliberate* second try is a different operation and should not be de-duplicated.
+    """
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"grace:{operation}:{reference}:{attempt}"))
+
+
+def _request_id(method: str, path: str) -> str:
+    return request_id(method, path)
+
+
 class PaymentRail(Protocol):
     mode: str
 
     def create_order(self, amount: float, currency: str, reference: str) -> dict[str, Any]: ...
+
+    def order_status(self, order_id: str) -> str: ...
+
+    def approve(self, order_id: str) -> dict[str, Any]: ...
 
     def authorize(self, order_id: str) -> dict[str, Any]: ...
 
@@ -41,15 +59,18 @@ class SandboxPayPal:
     mode = "sandbox"
 
     def __init__(self, client_id: str | None = None, secret: str | None = None) -> None:
-        self.client_id = client_id or os.environ.get("GRACE_PAYPAL_CLIENT_ID", "")
-        self.secret = secret or os.environ.get("GRACE_PAYPAL_CLIENT_SECRET", "")
+        # One name for these, everywhere: PAYPAL_CLIENT_ID / PAYPAL_CLIENT_SECRET. They were
+        # GRACE_PAYPAL_* here, PAYPAL_* in paypal_disputes.py and GRACE_PAYPAL_* in render.yaml,
+        # which meant a correctly configured deployment could still start the simulator.
+        self.client_id = client_id or os.environ.get("PAYPAL_CLIENT_ID", "")
+        self.secret = secret or os.environ.get("PAYPAL_CLIENT_SECRET", "")
         if not self.client_id or not self.secret:
             raise RailError(
-                "sandbox rail requested without GRACE_PAYPAL_CLIENT_ID / "
-                "GRACE_PAYPAL_CLIENT_SECRET. Refusing to fall back to the simulator silently - "
-                "that would hide exactly the failure this project is about."
+                "sandbox rail requested without PAYPAL_CLIENT_ID / PAYPAL_CLIENT_SECRET. "
+                "Refusing to fall back to the simulator silently - that would hide exactly the "
+                "failure this project is about."
             )
-        self.base = os.environ.get("GRACE_PAYPAL_BASE", "https://api-m.sandbox.paypal.com")
+        self.base = os.environ.get("PAYPAL_BASE", "https://api-m.sandbox.paypal.com")
         self._token: str | None = None
         self._token_expires = 0.0
 
@@ -94,9 +115,11 @@ class SandboxPayPal:
             headers={
                 "Authorization": f"Bearer {self._access_token()}",
                 "Content-Type": "application/json",
-                # PayPal's answer to a retried capture: this header is how a partial failure is
-                # made safe. Same key, same operation, no double charge.
-                "PayPal-Request-Id": body.pop("__request_id", str(uuid.uuid4())),
+                # PayPal's idempotency header. It must be STABLE for a given operation, not fresh
+                # per attempt: a retry after an ambiguous timeout has to carry the same key or the
+                # retry can double-charge. Callers pass a deterministic key; the uuid4 default is
+                # only reached if they do not.
+                "PayPal-Request-Id": body.pop("__request_id", _request_id(method, path)),
             },
         )
         try:
@@ -123,9 +146,43 @@ class SandboxPayPal:
                 ],
             },
         )
-        return {"mode": self.mode, "order_id": result.get("id"), "status": result.get("status")}
+        approval_url = None
+        for link in result.get("links", []):
+            if link.get("rel") in {"approve", "payer-action"}:
+                approval_url = link.get("href")
+        return {
+            "mode": self.mode,
+            "order_id": result.get("id"),
+            "status": result.get("status"),
+            # Presence of this is what makes the payment wait. An order is not authorised because
+            # it exists; it is authorised because a human or agent holding the instrument approved
+            # it. Calling authorize first returns ORDER_NOT_APPROVED.
+            "approval_url": approval_url,
+        }
+
+    def order_status(self, order_id: str) -> str:
+        result = self._call("GET", f"/v2/checkout/orders/{order_id}", {})
+        return str(result.get("status") or "UNKNOWN")
+
+    def approve(self, order_id: str) -> dict[str, Any]:
+        """Only the buyer can do this. Present so the flow is explicit, not so we can fake it.
+
+        Against the sandbox this cannot be automated with client credentials: a real approval
+        happens in a browser session against `approval_url`. This method exists for the simulated
+        rail and for tests; calling it on the sandbox returns the URL and does nothing else.
+        """
+        raise RailError(
+            "approval cannot be performed with client credentials. Open the approval_url and "
+            "complete the buyer approval, then authorise."
+        )
 
     def authorize(self, order_id: str) -> dict[str, Any]:
+        status = self.order_status(order_id)
+        if status != "APPROVED":
+            raise RailError(
+                f"ORDER_NOT_APPROVED: order {order_id} is {status}. PayPal requires the buyer to "
+                f"approve before authorize. Open the approval_url returned by create_order."
+            )
         result = self._call("POST", f"/v2/checkout/orders/{order_id}/authorize", {})
         authorization_id = None
         for unit in result.get("purchase_units", []):
@@ -166,10 +223,13 @@ class SimulatedRail:
 
     mode = "simulated"
 
-    def __init__(self) -> None:
+    def __init__(self, auto_approve: bool = True) -> None:
         self._orders: dict[str, dict[str, Any]] = {}
         self.instrument_limit: float | None = None
         self.transient_failures = 0
+        # True keeps the demo honest but short: the approval step is skipped, and the rail says so.
+        # Set False to exercise the real constraint, which is what the sandbox does every time.
+        self.auto_approve = auto_approve
 
     def create_order(self, amount: float, currency: str, reference: str) -> dict[str, Any]:
         order_id = f"SIM-ORDER-{uuid.uuid5(uuid.NAMESPACE_URL, reference).hex[:12].upper()}"
@@ -178,11 +238,28 @@ class SimulatedRail:
             "currency": currency,
             "status": "CREATED",
         }
-        return {"mode": self.mode, "order_id": order_id, "status": "CREATED", "approval_url": None}
+        state = "APPROVED" if self.auto_approve else "CREATED"
+        self._orders[order_id]["status"] = state
+        approval = None if self.auto_approve else f"https://example.invalid/approve/{order_id}"
+        return {"mode": self.mode, "order_id": order_id, "status": state, "approval_url": approval}
+
+    def order_status(self, order_id: str) -> str:
+        return str(self._orders.get(order_id, {}).get("status", "UNKNOWN"))
+
+    def approve(self, order_id: str) -> dict[str, Any]:
+        order = self._orders.setdefault(order_id, {"status": "CREATED"})
+        order["status"] = "APPROVED"
+        return {"mode": self.mode, "order_id": order_id, "status": "APPROVED"}
 
     def authorize(self, order_id: str) -> dict[str, Any]:
         order = self._orders.setdefault(order_id, {"status": "CREATED"})
-        order["status"] = "APPROVED"
+        if order["status"] != "APPROVED":
+            return {
+                "mode": self.mode,
+                "status": "ORDER_NOT_APPROVED",
+                "reason": "ORDER_NOT_APPROVED",
+                "order_status": order["status"],
+            }
         authorization_id = f"SIM-AUTH-{uuid.uuid5(uuid.NAMESPACE_URL, order_id).hex[:12].upper()}"
         order["authorization_id"] = authorization_id
         return {"mode": self.mode, "authorization_id": authorization_id, "status": "AUTHORIZED"}
@@ -225,6 +302,6 @@ def make_rail(mode: str = "auto") -> PaymentRail:
         return SandboxPayPal()
     if want == "simulated":
         return SimulatedRail()
-    if os.environ.get("GRACE_PAYPAL_CLIENT_ID") and os.environ.get("GRACE_PAYPAL_CLIENT_SECRET"):
+    if os.environ.get("PAYPAL_CLIENT_ID") and os.environ.get("PAYPAL_CLIENT_SECRET"):
         return SandboxPayPal()
     return SimulatedRail()

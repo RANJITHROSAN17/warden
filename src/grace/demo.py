@@ -17,7 +17,7 @@ from grace import compensate
 from grace import dispute as dispute_mod
 from grace import paypal_disputes as paypal_disputes_mod
 from grace import verify as verify_mod
-from grace.engine import Engine
+from grace.engine import CharacterRefusal, Engine
 from grace.ledger import Ledger
 from grace.models import Action, Authority, Payee, Payment
 from grace.rail import RailError, SimulatedRail, make_rail
@@ -669,6 +669,102 @@ def story_file(mode: str = "auto") -> int:
     return 0
 
 
+def _assessor_for(holder, matcher):
+    """Adapt a Character into the callable the engine expects."""
+
+    def assess(authority, payee, amount, purpose):
+        return character_mod.judge(
+            holder,
+            character_mod.Request(
+                vendor=payee.name, purpose=purpose, amount=amount, at="2026-10-29T11:05:00"
+            ),
+            base_ceiling=authority.ceiling,
+            matcher=matcher,
+        )
+
+    return assess
+
+
+def story_gate(mode: str = "auto") -> int:
+    """The AI decision, inside the payment flow. Same purchase, two businesses, two outcomes.
+
+    This is the story the review asked for: not a dashboard illustration, but a judgement that
+    stops one payment and lets the other through - with the ceiling checked first and never raised.
+    """
+    rail = make_rail(mode)
+    matcher = character_mod.matcher_from_env()
+    holders = _character_histories()
+
+    _header("the judgement, inside the payment", rail)
+    print(
+        f"matcher   {matcher.name}"
+        + (
+            "  (fallback - set GRACE_EMBED_URL for real embeddings)"
+            if matcher.name == "lexical"
+            else "  (real embeddings)"
+        )
+    )
+    print()
+
+    for account, should_pass in (("a design studio", True), ("a plumbing wholesaler", False)):
+        holder = holders[account]
+        ledger = Ledger()
+        engine = Engine(ledger, make_rail(mode), assessor=_assessor_for(holder, matcher))
+        authority = Authority(
+            id=f"auth_{account.split()[-1]}",
+            purpose="campaign artwork for spring launch",
+            ceiling=500.0,
+            ttl_minutes=30,
+            require_character=True,
+            min_conformance=0.55,
+        )
+        payee = Payee(id="AG-PIXEL", name="PixelForge Design")
+        print(f"{account}")
+        print("        authority ceiling 500.00, require_character on, min conformance 0.55")
+        try:
+            paid = engine.authorise(authority, payee, 480.0)
+            print(f"        RESULT   ALLOWED  {paid.id}  {paid.state}")
+            if paid.state == "pending_approval":
+                print("                 parked for payer approval before any authorisation")
+            expect = "allowed" if should_pass else "refused"
+            print(f"        expected {expect}")
+        except CharacterRefusal as refusal:
+            action = refusal.action
+            print(f"        RESULT   REFUSED  {action.reason[:100]}")
+            print(f"                 receipt  {action.id} (signed, verifiable)")
+            failed = [c for c in action.checks if not c.passed]
+            for check in failed[:2]:
+                print(f"                 {check.rule_id}: {check.reason}")
+            expect = "allowed" if should_pass else "refused"
+            print(f"        expected {expect}")
+        print()
+
+    print("The ceiling was checked first in both cases and was never raised by a good judgement.")
+    print("A favourable assessment can let a payment through; it can never widen an authority.")
+    print()
+
+    print(
+        "And the hard limit still wins: ask the design studio for 900.00 against a 500.00 ceiling"
+    )
+    holder = holders["a design studio"]
+    engine = Engine(Ledger(), make_rail(mode), assessor=_assessor_for(holder, matcher))
+    tight = Authority(
+        id="auth_tight",
+        purpose="campaign artwork for spring launch",
+        ceiling=500.0,
+        ttl_minutes=30,
+        require_character=True,
+        min_conformance=0.55,
+    )
+    try:
+        engine.authorise(tight, Payee(id="AG-PIXEL", name="PixelForge Design"), 900.0)
+    except ValueError as exc:
+        print(f"        ValueError: {exc}")
+    print("        the character judgement never ran, because the ceiling rejected it first")
+    print()
+    return 0
+
+
 STORIES = {
     "full": story_full,
     "partial": story_partial,
@@ -679,6 +775,7 @@ STORIES = {
     "alert": story_alert,
     "market": story_market,
     "character": story_character,
+    "gate": story_gate,
     "file": story_file,
 }
 
@@ -688,7 +785,14 @@ def _main(argv: list[str] | None = None) -> int:
     parser.add_argument("--story", choices=sorted(STORIES), default="partial")
     parser.add_argument("--rail", choices=["auto", "sandbox", "simulated"], default="auto")
     parser.add_argument("--all", action="store_true", help="run every story in order")
+    parser.add_argument("--list", action="store_true", help="list the stories and what each shows")
     args = parser.parse_args(argv)
+
+    if args.list:
+        for name in sorted(STORIES):
+            doc = (STORIES[name].__doc__ or "").strip().splitlines()[0]
+            print(f"  {name:<12} {doc}")
+        return 0
 
     try:
         if args.all:
@@ -702,6 +806,7 @@ def _main(argv: list[str] | None = None) -> int:
                 "alert",
                 "market",
                 "character",
+                "gate",
                 "file",
             ):
                 STORIES[name](args.rail)

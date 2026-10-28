@@ -85,6 +85,16 @@ SUPPORTING = {
 # object expects `tracking_info` for these, which is a different payload shape from a note.
 TRACKED = {"PROOF_OF_FULFILLMENT", "ONLINE_TRACKING_INFORMATION", "ADDITIONAL_TRACKING_INFORMATION"}
 
+# What the payment's own signed record can honestly prove. Note what is absent: fulfilment.
+# That has to come from the merchant - a carrier scan, a signature, a delivery receipt - because
+# the platform's record of the money says nothing about the goods.
+TRANSACTION_EVIDENCE = {
+    "authorise": "DETAILS_OF_PURCHASE",
+    "capture": "DETAILS_OF_PURCHASE",
+    "void": "PROOF_OF_REFUND",
+    "expire": "PROOF_OF_REFUND",
+}
+
 
 @dataclass(frozen=True)
 class Evidence:
@@ -195,14 +205,15 @@ def gather(
 
     for transition in payment_history:
         if transition["allowed"] and transition["kind"] in {"authorise", "capture"}:
-            # Emitted in PayPal's vocabulary so the packet needs no translation at filing time.
-            kind = (
-                "ADDITIONAL_INFORMATION"
-                if transition["kind"] == "authorise"
-                else "PROOF_OF_REFUND"
-                if transition["kind"] == "void"
-                else "PROOF_OF_FULFILLMENT"
-            )
+            # Emitted in PayPal's vocabulary, and deliberately conservative.
+            #
+            # A capture proves money moved. It does NOT prove a parcel arrived or a service was
+            # performed, so it must never be classified as PROOF_OF_FULFILLMENT. Mapping it there
+            # would let a successful transaction settle a non-receipt claim on its own, which is
+            # precisely the false claim this module exists to refuse.
+            kind = TRANSACTION_EVIDENCE.get(str(transition["kind"]))
+            if kind is None:
+                continue
             found.append(
                 Evidence(
                     id=f"ev_{transition['id']}",

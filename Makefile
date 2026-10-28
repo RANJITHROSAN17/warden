@@ -1,4 +1,4 @@
-.PHONY: install demo serve test lint clean postman spec docker
+.PHONY: install demo serve dashboard test lint clean postman spec docker
 
 install:
 	python -m pip install -e ".[server,dev]"
@@ -7,7 +7,10 @@ demo:
 	python -m grace.demo --all
 
 serve:
-	GRACE_DB=grace.db python -m grace.cli serve --port 8020
+	GRACE_DB=grace.db python -m uvicorn grace.api:app --host 0.0.0.0 --port 8020
+
+dashboard: serve    ## alias: the README used to say "make dashboard", which did not exist
+	@true
 
 test:
 	pytest

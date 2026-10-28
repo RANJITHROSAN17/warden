@@ -33,13 +33,24 @@ from . import dispute as dispute_mod
 
 EVIDENCE_ID = re.compile(r"\bev_[a-z0-9_]+\b")
 
-# Sentences that are ours, not the model's. They assert nothing about the world, so they need no
-# evidence id. Kept deliberately tiny: every addition here widens the hole.
-BOILERPLATE = (
-    "The merchant does not assert any fact that is not listed above.",
+# The exact sentences that are ours. A model may echo these and nothing else: they assert nothing
+# about the world, so they need no evidence id.
+#
+# These are matched in full, after whitespace normalisation - NOT by prefix. A prefix rule accepted
+# anything that merely began with an approved phrase, so "The merchant does not assert any fact
+# that is not listed above. The buyer is a known fraudster." would have passed. It does not now.
+BOILERPLATE = frozenset(
+    {
+        "The merchant does not assert any fact that is not listed above.",
+        "In response, the merchant relies on the following records:",
+    }
+)
+
+# Openers that may be followed by a claim, so only the claim part is checked against the evidence.
+# A sentence starting with one of these is allowed only if the remainder cites evidence.
+OPENERS = (
     "Response to dispute",
     "The cardholder states:",
-    "In response, the merchant relies on the following records:",
 )
 
 
@@ -154,18 +165,31 @@ def ground(text: str, findings: tuple[dispute_mod.Finding, ...]) -> Grounding:
     kept: list[str] = []
     rejected: list[str] = []
     for sentence in _sentences(text):
-        if any(sentence.startswith(prefix) for prefix in BOILERPLATE):
+        normalised = re.sub(r"\s+", " ", sentence).strip()
+
+        # Our own sentences, matched in full. A prefix match would let a model append a claim.
+        if normalised in BOILERPLATE:
             kept.append(sentence)
             continue
+
         cited = set(EVIDENCE_ID.findall(sentence))
         if cited and cited <= allowed_set:
             kept.append(sentence)
             continue
-        # A bullet that names a requirement is a line of our table, not a claim. Conceding that
-        # something is NOT evidenced can only weaken a case, never fabricate one.
+
+        # A line of our findings table. It names a requirement and cites evidence, or concedes.
         if sentence.startswith("-") and sentence[1:].split(":")[0].strip() in requirements:
             kept.append(sentence)
             continue
+
+        # An opener may not smuggle a claim behind it: the remainder must cite evidence.
+        opener = next((o for o in OPENERS if normalised.startswith(o)), None)
+        if opener is not None:
+            remainder = normalised[len(opener) :].strip()
+            clean_remainder = not remainder or set(EVIDENCE_ID.findall(remainder)) <= allowed_set
+            if clean_remainder and cited <= allowed_set:
+                kept.append(sentence)
+                continue
         rejected.append(sentence)
 
     if rejected:

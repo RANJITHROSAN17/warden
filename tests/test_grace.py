@@ -760,3 +760,276 @@ def test_the_vendored_spec_matches_what_the_client_implements() -> None:
 
     assert set(pp.OFFER_TYPES) == set(spec["components"]["schemas"]["offer_type"]["enum"])
     assert set(pp.STAGES) == set(spec["components"]["schemas"]["dispute_lifecycle_stage"]["enum"])
+
+
+# ── the review's P0s, pinned so they cannot regress ─────────────────────────────────────────
+
+
+def test_a_captured_payment_is_not_proof_of_fulfillment() -> None:
+    """Regression: a capture proves money moved, never that a parcel arrived.
+
+    This was a real bug - the evidence gatherer mapped `capture` to PROOF_OF_FULFILLMENT, which
+    would have let a successful transaction settle a non-receipt claim on its own.
+    """
+    from grace import dispute as d
+    from grace.engine import Engine
+    from grace.ledger import Ledger
+    from grace.models import Authority, Payee
+    from grace.rail import SimulatedRail
+
+    ledger = Ledger()
+    engine = Engine(ledger, SimulatedRail())
+    authority = Authority(id="a", purpose="restock", ceiling=500.0, ttl_minutes=30)
+    paid = engine.authorise(authority, Payee(id="p", name="Acme"), 120.0)
+    engine.capture(paid)
+
+    found = d.Dispute(
+        "dsp", paid.id, "ITEM_NOT_RECEIVED", 120.0, "USD", "never arrived", "2026-11-04"
+    )
+    evidence = d.gather(found, ledger.transitions(paid.id), [])
+    kinds = {item.kind for item in evidence}
+
+    assert "PROOF_OF_FULFILLMENT" not in kinds
+    assert "DETAILS_OF_PURCHASE" in kinds, "the transaction record is still evidence of the payment"
+
+    assessment = d.assess(found, evidence)
+    assert assessment.recommendation == "accept", "no fulfilment proof means do not contest"
+
+
+def test_an_order_cannot_be_authorised_before_the_payer_approves() -> None:
+    """PayPal answers ORDER_NOT_APPROVED if you skip the approval step. So does the simulator."""
+    from grace.rail import SimulatedRail
+
+    rail = SimulatedRail(auto_approve=False)
+    order = rail.create_order(120.0, "USD", "ref-1")
+    assert order["approval_url"], "an approvable order must surface a URL"
+
+    result = rail.authorize(order["order_id"])
+    assert result["status"] == "ORDER_NOT_APPROVED"
+
+    rail.approve(order["order_id"])
+    assert rail.authorize(order["order_id"])["status"] == "AUTHORIZED"
+
+
+def test_the_engine_parks_a_payment_when_approval_is_required() -> None:
+    from grace.engine import Engine
+    from grace.ledger import Ledger
+    from grace.models import Authority, Payee
+    from grace.rail import SimulatedRail
+
+    engine = Engine(Ledger(), SimulatedRail(auto_approve=False))
+    authority = Authority(id="a", purpose="restock", ceiling=500.0, ttl_minutes=30)
+    payment = engine.authorise(authority, Payee(id="p", name="Acme"), 120.0)
+
+    assert payment.state == "pending_approval"
+    assert payment.approval_url
+    assert payment.authorization_id is None, "nothing may be authorised before approval"
+
+
+def test_expiry_releases_the_hold_at_the_rail_not_only_in_the_ledger() -> None:
+    """A local expiry that leaves a live authorisation at PayPal is a hold nobody is watching."""
+    from datetime import datetime, timedelta, timezone
+
+    from grace.engine import Engine
+    from grace.ledger import Ledger
+    from grace.models import Authority, Payee
+    from grace.rail import SimulatedRail
+
+    rail = SimulatedRail()
+    voided: list[str] = []
+    original = rail.void
+    rail.void = lambda auth_id: (voided.append(auth_id), original(auth_id))[1]  # type: ignore[method-assign]
+
+    ledger = Ledger()
+    engine = Engine(ledger, rail)
+    authority = Authority(id="a", purpose="restock", ceiling=500.0, ttl_minutes=1)
+    payment = engine.authorise(authority, Payee(id="p", name="Acme"), 120.0)
+
+    late = Engine(ledger, rail, clock=lambda: datetime.now(timezone.utc) + timedelta(minutes=40))
+    action = late.expire(payment)
+
+    assert action.allowed is True
+    assert voided == [payment.authorization_id], "the external authorisation was never voided"
+
+
+def test_an_expiry_that_cannot_release_the_hold_is_not_reported_as_success() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from grace.engine import Engine
+    from grace.ledger import Ledger
+    from grace.models import Authority, Payee
+    from grace.rail import SimulatedRail
+
+    rail = SimulatedRail()
+
+    def refuse(auth_id: str) -> dict:
+        raise RuntimeError("rail unreachable")
+
+    rail.void = refuse  # type: ignore[method-assign]
+
+    ledger = Ledger()
+    engine = Engine(ledger, rail)
+    authority = Authority(id="a", purpose="restock", ceiling=500.0, ttl_minutes=1)
+    payment = engine.authorise(authority, Payee(id="p", name="Acme"), 120.0)
+
+    late = Engine(ledger, rail, clock=lambda: datetime.now(timezone.utc) + timedelta(minutes=40))
+    action = late.expire(payment)
+
+    assert action.allowed is False, "a failed release must not be recorded as an expiry"
+    assert payment.state != "expired"
+
+
+def test_idempotency_keys_are_stable_for_the_same_operation() -> None:
+    """A retried capture must carry the same key, or the retry can double-charge."""
+    from grace.rail import request_id
+
+    assert request_id("capture", "auth-123") == request_id("capture", "auth-123")
+    assert request_id("capture", "auth-123") != request_id("void", "auth-123")
+    assert request_id("capture", "auth-123") != request_id("capture", "auth-123", attempt=1)
+
+
+# ── the AI judgement, inside the payment flow ───────────────────────────────────────────────
+
+
+def _gate_engine(account: str, matcher=None):
+    from grace import character as c
+    from grace.demo import _character_histories
+    from grace.engine import Engine
+    from grace.ledger import Ledger
+    from grace.rail import SimulatedRail
+
+    holder = _character_histories()[account]
+
+    def assess(authority, payee, amount, purpose):
+        return c.judge(
+            holder,
+            c.Request(vendor=payee.name, purpose=purpose, amount=amount, at="2026-10-29T11:05:00"),
+            base_ceiling=authority.ceiling,
+            matcher=matcher,
+        )
+
+    return Engine(Ledger(), SimulatedRail(), assessor=assess)
+
+
+def _gate_authority():
+    from grace.models import Authority
+
+    return Authority(
+        id="auth_gate",
+        purpose="campaign artwork for spring launch",
+        ceiling=500.0,
+        ttl_minutes=30,
+        require_character=True,
+        min_conformance=0.55,
+    )
+
+
+def test_the_judgement_stops_a_payment_that_is_out_of_character() -> None:
+    """The review's central point: the AI must gate a real payment, not decorate a dashboard."""
+    from grace.engine import CharacterRefusal
+    from grace.models import Payee
+
+    engine = _gate_engine("a plumbing wholesaler")
+    try:
+        engine.authorise(_gate_authority(), Payee(id="p", name="PixelForge Design"), 480.0)
+    except CharacterRefusal as refusal:
+        assert "conformance" in refusal.action.reason
+        assert refusal.action.allowed is False
+        assert refusal.action.id, "a refused payment still needs a verifiable receipt"
+        assert any(c.rule_id.startswith("character.") for c in refusal.action.checks)
+    else:  # pragma: no cover
+        raise AssertionError("an out-of-character payment was authorised")
+
+
+def test_the_same_payment_passes_for_the_business_that_matches_it() -> None:
+    from grace.models import Payee
+
+    engine = _gate_engine("a design studio")
+    payment = engine.authorise(_gate_authority(), Payee(id="p", name="PixelForge Design"), 480.0)
+    assert payment.state in {"authorised", "pending_approval"}
+
+
+def test_a_good_judgement_can_never_widen_the_ceiling() -> None:
+    """A favourable assessment may allow; it may not authorise more than the authority permits."""
+    from grace.models import Payee
+
+    engine = _gate_engine("a design studio")
+    try:
+        engine.authorise(_gate_authority(), Payee(id="p", name="PixelForge Design"), 900.0)
+    except ValueError as exc:
+        assert "ceiling" in str(exc)
+        assert not isinstance(exc, Exception) or "conformance" not in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("the AI let a payment exceed the ceiling")
+
+
+def test_every_judgement_names_the_matcher_that_produced_it() -> None:
+    """ "lexical" must be visible, so a fallback cannot be mistaken for a model."""
+    from grace import character as c
+
+    verdict = c.judge(c.Character("empty"), c.Request("v", "p", 10.0))
+    assert verdict.public()["provider"] == "lexical"
+
+
+def test_a_semantic_matcher_changes_the_answer_where_tokens_fail() -> None:
+    """Purpose matching is the one place a model is genuinely needed.
+
+    "campaign artwork" and "visual assets for our seasonal launch" share no meaningful tokens.
+    A matcher that understands them flips the purpose reason from 0.05 to high.
+    """
+    from grace import character as c
+
+    class Semantic:
+        name = "test-semantic"
+
+        def similarity(self, a: str, b: str) -> float:
+            return 0.9
+
+    holder = c.Character(
+        "a business",
+        (c.Spent("s1", "PixelForge Design", "campaign artwork", 480.0, "2026-10-12T13:00:00"),),
+    )
+    request = c.Request(
+        "PixelForge Design",
+        "visual assets for our seasonal launch",
+        480.0,
+        at="2026-10-29T11:05:00",
+    )
+
+    lexical = c.judge(holder, request, matcher=c.LexicalMatcher())
+    semantic = c.judge(holder, request, matcher=Semantic())
+
+    assert semantic.conformance > lexical.conformance
+    assert semantic.provider == "test-semantic"
+
+
+def test_boilerplate_phrasing_cannot_smuggle_a_claim() -> None:
+    """A prefix rule would accept this sentence. The exact-match rule does not."""
+    from grace import reasoning
+
+    _, findings = _findings_from_ledger()
+    draft = (
+        "The merchant does not assert any fact that is not listed above. "
+        "The buyer is a known serial fraudster."
+    )
+    check = reasoning.ground(draft, findings)
+    assert check.ok is False
+    assert any("fraudster" in r for r in check.rejected)
+
+
+def _findings_from_ledger():
+    from grace import dispute as d
+
+    found = d.Dispute("d1", "p1", "ITEM_NOT_RECEIVED", 10.0, "USD", "x", "2026-11-04")
+    evidence = [d.Evidence("ev_ship", "PROOF_OF_FULFILLMENT", "scan", "logistics")]
+    return found, d.assess(found, evidence).findings
+
+
+def test_the_exact_boilerplate_sentence_is_still_allowed() -> None:
+    from grace import reasoning
+
+    _, findings = _findings_from_ledger()
+    check = reasoning.ground(
+        "The merchant does not assert any fact that is not listed above.", findings
+    )
+    assert check.ok is True

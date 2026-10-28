@@ -119,7 +119,8 @@
 <header>
   <h1>Grace</h1>
   <span class="tag">character, not ceilings</span>
-  <span class="badge" id="mode">rail: …</span>
+  <span class="badge" id="mode" title="which payment rail is actually running">rail: …</span>
+  <span class="badge" id="matcher" title="which matcher produced the character judgements">matcher: …</span>
   <span class="badge" id="signing">signing: …</span>
 </header>
 <main>
@@ -128,9 +129,13 @@
     One identical 480.00 payment to <b>PixelForge Design</b>, judged against three different
     businesses. No ceiling is consulted. The answer differs because the <b>account</b> differs —
     and every reason names the payments it was reasoned from.
+    <br><b>Synthetic data.</b> These three histories are hand-written examples, not PayPal
+    transaction history. Wiring `/api/character` to a real account's transactions is the next step
+    and is not claimed here.
   </p>
   <div class="chars" id="chars"></div>
   <div class="note" id="chars-odd"></div>
+  <div class="note" id="runtime-note" style="color:var(--warn)"></div>
 
   <div class="flowlabel" style="margin-top:26px">where the money is, right now</div>
   <div class="flow">
@@ -182,7 +187,9 @@
   </p>
 </main>
 <script>
-const state = { payments: [], summary: null, selected: null, disputes: [], character: null };
+const state = {
+  payments: [], summary: null, selected: null, disputes: [], character: null, runtime: null,
+};
 
 async function api(path, options) {
   const response = await fetch(path, Object.assign({ headers: { "Content-Type": "application/json" } }, options));
@@ -238,7 +245,8 @@ function renderCharacter() {
         <div class="conf">${v.conformance.toFixed(2)}</div>
         <div class="why">${v.decision.toUpperCase()} · ${v.explanation}</div>
         ${reasons}
-        <div class="ceil">ceiling <b>500.00</b> → <b>${v.suggested_ceiling.toFixed(2)}</b></div>
+        <div class="ceil">ceiling <b>500.00</b> → <b>${v.suggested_ceiling.toFixed(2)}</b>
+          · matcher <b>${v.provider}</b></div>
         <div class="odd">out of character: 9,600.00 crypto at 03:12 →
           <b>${odd.decision.toUpperCase()}</b> (${odd.conformance.toFixed(2)})</div>
       </div>`;
@@ -444,6 +452,13 @@ async function refresh() {
   state.summary = summary;
   state.disputes = disputes.disputes;
   state.character = character;
+  state.runtime = runtime;
+  document.getElementById("mode").textContent = `rail: ${runtime.rail}`;
+  document.getElementById("matcher").textContent = `matcher: ${runtime.matcher}`;
+  document.getElementById("runtime-note").textContent = runtime.matcher_is_fallback
+    ? "The matcher running now is lexical token overlap — the fallback, not a model. "
+      + "Set GRACE_EMBED_URL for semantic matching. Every judgement below records which one produced it."
+    : "";
   renderSummary();
   renderRows();
   renderDisputes();

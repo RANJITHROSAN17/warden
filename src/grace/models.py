@@ -12,6 +12,10 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 # States a payment can be in. `authorised` and `part_captured` are the open window.
+# The order exists but nobody has approved it, so nothing is authorised yet. This state exists
+# because PayPal requires buyer approval between create_order and authorize; skipping it is how a
+# sandbox integration returns ORDER_NOT_APPROVED the first time it meets the real API.
+PENDING_APPROVAL = "pending_approval"
 AUTHORISED = "authorised"
 PART_CAPTURED = "part_captured"
 CAPTURED = "captured"
@@ -20,7 +24,7 @@ EXPIRED = "expired"
 # Part taken, part handed back. The most common honest ending, and the one dashboards miss.
 PART_RELEASED = "part_released"
 
-OPEN_STATES = (AUTHORISED, PART_CAPTURED)
+OPEN_STATES = (PENDING_APPROVAL, AUTHORISED, PART_CAPTURED)
 
 
 @dataclass(frozen=True)
@@ -40,6 +44,10 @@ class Authority:
     allow_retry: bool = True
     max_capture_attempts: int = 3
     ttl_minutes: int = 30
+    # Character assessment. Off by default so existing authorities behave exactly as before; turn
+    # it on to make a judgement about the business part of authorisation rather than decoration.
+    require_character: bool = False
+    min_conformance: float = 0.55
 
     def public(self) -> dict[str, Any]:
         return asdict(self)
@@ -70,6 +78,7 @@ class Payment:
     captured: float = 0.0
     attempts: int = 0
     order_id: str | None = None
+    approval_url: str | None = None
     authorization_id: str | None = None
     # Every declaration the agent made about what it was doing, in order.
     notes: list[str] = field(default_factory=list)

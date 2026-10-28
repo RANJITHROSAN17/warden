@@ -115,6 +115,36 @@ That is a dataset nobody can buy or scrape. Competitors would have to ask the cu
    they can be trusted with money. A lock means a human. Character judgement is the only mechanism
    that lets the human leave.
 
+## The judgement, inside the payment
+
+The review was right that a scoring function which never gates a payment is a dashboard, not a
+product. It now gates one:
+
+```bash
+python -m grace.demo --story gate
+```
+
+```
+a plumbing wholesaler
+        authority ceiling 500.00, require_character on, min conformance 0.55
+        RESULT   REFUSED  out of character: conformance 0.34 below 0.55
+                 receipt  act_83eb74ca5e (signed, verifiable)
+                 character.vendor: PixelForge Design has never been paid by this account
+                 character.purpose: nothing resembles 'campaign artwork for spring launch'
+
+a design studio
+        RESULT   ALLOWED  pay_5c2adcc2df  authorised
+```
+
+And the order is fixed in code, not in a document:
+
+```
+        ValueError: 900.00 exceeds the authority ceiling 500.00
+        the character judgement never ran, because the ceiling rejected it first
+```
+
+**A favourable judgement can let a payment through. It can never widen an authority.**
+
 ## Where the AI is necessary
 
 | Component | Why a rule fails |
@@ -219,9 +249,9 @@ quietly omitted.
 
 ```bash
 make install
-make test          # 42 tests
-make demo          # all 9 stories
-make dashboard     # http://localhost:8020
+make test          # 62 tests
+make demo          # all 11 stories
+make serve         # http://localhost:8020 — prints which rail and matcher are live
 ```
 
 ```
@@ -236,19 +266,43 @@ python -m grace.demo --list              # everything
 
 ## Honest notes
 
-Things a judge should hear from us before they find them.
+The things a judge should hear from us before they find them. Every line below was checked against
+the running code on the date of the last commit.
 
-- **No model is called at runtime.** The purpose comparison in `character.py` is token overlap, not
-  embeddings — a faithful stand-in, and the demo tables are real output. Wiring semantic similarity
-  is the next build, and it is the one place a model is genuinely required.
-- **The weights are chosen, not learned.** `0.35 / 0.30 / 0.25 / 0.10` sit at the top of
-  `character.py` so they can be argued with. A production system would fit them to outcomes.
-- **The character model is adjacent to behavioural fraud analytics** (Feedzai, Featurespace) and to
-  spend policy tools (Ramp, Brex). `docs/IDEA.md` states what differs, plainly.
-- **The dispute endpoints are not called.** The MCP tools return the exact packet that *would* be
-  posted and name the endpoint. We have not filed against the live Disputes API, so we do not claim
-  it.
-- **Only the sandbox rail is exercised.** No production credentials were used.
+**What actually runs, and what does not**
+
+| Capability | State |
+|---|---|
+| Character judgement gating a payment | **wired in** — `Engine(assessor=...)` + `Authority.require_character`. A payment inside the ceiling but out of character is refused with a signed receipt including the reasons and cited payments. |
+| Semantic purpose matching | **built, needs a key.** `EmbeddingMatcher` calls any OpenAI-compatible `/embeddings` endpoint. Without `GRACE_EMBED_URL` the **lexical fallback** runs and every judgement records `provider: lexical`. |
+| Sample account histories | **synthetic.** Three hand-written businesses in `demo.py`, labelled as such on the dashboard. Not connected to a real PayPal account's transactions yet. |
+| Dispute response rewriting | **gated, not wired by default.** `ground()` discards any draft with one unsupported sentence. `TemplateProvider` is the default and calls nothing. |
+| PayPal Disputes API | **client built from the vendored spec** (7 of 14 endpoints). Exercised against a simulator that enforces the same refusals. **Not called against live sandbox disputes** — that needs a merchant account with disputes on it. |
+| PayPal Orders v2 approval flow | **surfaced.** `create_order` returns `approval_url`; `authorise()` parks the payment in `pending_approval` instead of authorising an unapproved order. A real browser approval has **not** been completed end-to-end. |
+| Rail in use | `simulated` unless `PAYPAL_CLIENT_ID`/`_SECRET` are set. The startup banner and `/api/runtime` say which, always. |
+
+**Known gaps, stated plainly**
+
+- The weights in `character.py` (`0.35 / 0.30 / 0.25 / 0.10`) are **chosen, not learned**. They are
+  at the top of the file so they can be argued with. Fitting them to outcomes needs outcome data.
+- `API` write routes are token-guarded only when `GRACE_API_TOKEN` is set. Unset, they are open and
+  the banner says so. Do not deploy with real credentials and no token.
+- The simulator's `approve()` cannot stand in for a real buyer approval. Completing one against the
+  sandbox is a manual step and is not claimed as done.
+
+**Fixed after review, with regression tests**
+
+- A capture was classified as `PROOF_OF_FULFILLMENT`. It proves money moved, never that a parcel
+  arrived. Now `DETAILS_OF_PURCHASE`, and a test asserts a captured payment cannot settle a
+  non-receipt claim.
+- `expire()` closed the ledger entry without voiding the authorisation at the rail — a hold left
+  live on a customer's card. It now voids, and reports failure rather than claiming success.
+- `PayPal-Request-Id` was a fresh UUID per request, so a retried capture could double-charge. Keys
+  are now deterministic per (operation, reference, attempt).
+- `ground()` accepted any sentence beginning with an approved phrase, so a claim could be appended
+  to our own boilerplate. Boilerplate is now matched in full.
+- `.env.example` documented `WARDEN_*` variables; the code read `GRACE_PAYPAL_*`; `render.yaml` set
+  `PAYPAL_*`. One name now: `PAYPAL_CLIENT_ID` / `PAYPAL_CLIENT_SECRET`.
 
 ## Layout
 

@@ -29,11 +29,15 @@ platform stop *less* while losing nothing.
 
 from __future__ import annotations
 
+import json
 import math
+import os
 import re
+import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from statistics import median
-from typing import Any
+from typing import Any, Protocol
 
 # Weights are the only tuned numbers in this file. They are stated here rather than buried so a
 # reviewer can argue with them - which is the point of a checkable judgment.
@@ -44,6 +48,84 @@ W_RHYTHM = 0.10
 
 ALLOW_AT = 0.72
 HOLD_AT = 0.45
+
+
+class Matcher(Protocol):
+    """How two purpose strings are compared. The one place a model is genuinely required.
+
+    "spring campaign design" and "visual assets for our seasonal launch" share almost no tokens and
+    are obviously the same kind of purchase. Lexical overlap cannot see that; an embedding can.
+    """
+
+    name: str
+
+    def similarity(self, a: str, b: str) -> float: ...
+
+
+class LexicalMatcher:
+    """Token overlap. The fallback, and it says so in every judgement it produces."""
+
+    name = "lexical"
+
+    def similarity(self, a: str, b: str) -> float:
+        return _overlap(a, b)
+
+
+class EmbeddingMatcher:
+    """Cosine similarity over real embeddings from any OpenAI-compatible endpoint.
+
+    Enabled by GRACE_EMBED_URL. It is not exercised in CI and this file does not claim it is - but
+    it is the real path, and `Matcher.name` travels into the ledger so a judgement produced by the
+    fallback can never be mistaken for one produced by a model.
+    """
+
+    name = "embedding"
+
+    def __init__(self, url: str, model: str, api_key: str | None = None, timeout: float = 20.0):
+        self.url = url
+        self.model = model
+        self.api_key = api_key
+        self.timeout = timeout
+        self._cache: dict[str, list[float]] = {}
+
+    def _embed(self, text: str) -> list[float]:
+        if text in self._cache:
+            return self._cache[text]
+        body = json.dumps({"model": self.model, "input": text}).encode()
+        request = urllib.request.Request(
+            self.url,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                **({"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}),
+            },
+        )
+        with urllib.request.urlopen(request, timeout=self.timeout) as response:  # noqa: S310
+            payload = json.loads(response.read())
+        vector = [float(x) for x in payload["data"][0]["embedding"]]
+        self._cache[text] = vector
+        return vector
+
+    def similarity(self, a: str, b: str) -> float:
+        va, vb = self._embed(a), self._embed(b)
+        dot = sum(x * y for x, y in zip(va, vb, strict=True))
+        na = math.sqrt(sum(x * x for x in va))
+        nb = math.sqrt(sum(y * y for y in vb))
+        if not na or not nb:
+            return 0.0
+        return max(0.0, min(1.0, dot / (na * nb)))
+
+
+def matcher_from_env() -> Matcher:
+    url = os.environ.get("GRACE_EMBED_URL")
+    if not url:
+        return LexicalMatcher()
+    return EmbeddingMatcher(
+        url=url,
+        model=os.environ.get("GRACE_EMBED_MODEL", "text-embedding-3-small"),
+        api_key=os.environ.get("GRACE_EMBED_KEY"),
+    )
+
 
 STOPWORDS = frozenset(
     [
@@ -124,6 +206,7 @@ class Judgement:
     nearest: tuple[str, ...] = ()
     suggested_ceiling: float = 0.0
     explanation: str = ""
+    provider: str = "lexical"
 
     def public(self) -> dict[str, Any]:
         return {
@@ -133,6 +216,8 @@ class Judgement:
             "nearest": list(self.nearest),
             "suggested_ceiling": round(self.suggested_ceiling, 2),
             "explanation": self.explanation,
+            # Which matcher produced this. "lexical" is the fallback, and saying so is the point.
+            "provider": self.provider,
         }
 
 
@@ -200,11 +285,13 @@ def _vendor_reason(character: Character, request: Request) -> Reason:
     )
 
 
-def _purpose_reason(character: Character, request: Request) -> Reason:
+def _purpose_reason(
+    character: Character, request: Request, similarity: Callable[[str, str], float]
+) -> Reason:
     if not character.history:
         return Reason("purpose", 0.5, "no history to compare against", ())
     scored = sorted(
-        ((_overlap(item.purpose, request.purpose), item) for item in character.history),
+        ((similarity(item.purpose, request.purpose), item) for item in character.history),
         key=lambda pair: pair[0],
         reverse=True,
     )[:3]
@@ -245,11 +332,17 @@ def _rhythm_reason(character: Character, request: Request) -> Reason:
     return Reason("rhythm", 0.2, f"{hour:02d}:00 is outside the usual {low:02d}-{high:02d}")
 
 
-def judge(character: Character, request: Request, base_ceiling: float = 500.0) -> Judgement:
+def judge(
+    character: Character,
+    request: Request,
+    base_ceiling: float = 500.0,
+    matcher: Matcher | None = None,
+) -> Judgement:
     """Score a payment against the account's own character, and cite what the score rests on."""
+    matcher = matcher or LexicalMatcher()
     reasons = (
         _vendor_reason(character, request),
-        _purpose_reason(character, request),
+        _purpose_reason(character, request, matcher.similarity),
         _amount_reason(character, request),
         _rhythm_reason(character, request),
     )
@@ -284,6 +377,7 @@ def judge(character: Character, request: Request, base_ceiling: float = 500.0) -
         nearest=tuple(item.id for item in character.nearest(request)),
         suggested_ceiling=suggested,
         explanation=explanation,
+        provider=matcher.name,
     )
 
 

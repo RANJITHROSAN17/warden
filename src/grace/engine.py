@@ -19,6 +19,7 @@ from grace.models import (
     EXPIRED,
     PART_CAPTURED,
     PART_RELEASED,
+    PENDING_APPROVAL,
     VOIDED,
     Action,
     Authority,
@@ -41,15 +42,27 @@ def _parse(moment: str) -> datetime:
     return datetime.fromisoformat(moment.replace("Z", "+00:00"))
 
 
+class CharacterRefusal(RuntimeError):
+    """Raised when a payment is inside the ceiling but out of character. Carries the receipt."""
+
+    def __init__(self, action: Any) -> None:
+        super().__init__(action.reason)
+        self.action = action
+
+
 class Engine:
     def __init__(
         self,
         ledger: Any,
         rail: PaymentRail,
         clock: Callable[[], datetime] = _now,
+        assessor: Any = None,
     ) -> None:
         self.ledger = ledger
         self.rail = rail
+        # Optional: a callable (authority, payee, amount, purpose) -> character.Judgement. Set it to
+        # make the character judgement part of authorisation rather than a dashboard illustration.
+        self.assessor = assessor
         self.clock = clock
 
     # ── opening a payment ──────────────────────────────────────────────────────────────────
@@ -66,6 +79,57 @@ class Engine:
         moment = self.clock()
         reference = f"{authority.id}:{payee.id}:{amount:.2f}"
         order = self.rail.create_order(amount, authority.currency, reference)
+
+        # Character, if this engine was given an assessor and the authority asks for one.
+        # Order matters absolutely: the ceiling check above runs first and can never be raised by
+        # a favourable judgement. Grace can refuse a payment the limit allowed; it can never allow
+        # one the limit refused.
+        judgement = None
+        if self.assessor is not None and authority.require_character:
+            judgement = self.assessor(authority, payee, amount, purpose or authority.purpose)
+            if judgement.conformance < authority.min_conformance:
+                action = self._refuse_character(
+                    payment=None,
+                    authority=authority,
+                    amount=amount,
+                    payee=payee,
+                    judgement=judgement,
+                )
+                raise CharacterRefusal(action)  # noqa: TRY301
+
+        # The buyer-approval step. PayPal will answer ORDER_NOT_APPROVED if authorize is called
+        # before the payer approves, so the payment is parked here with the URL that unblocks it
+        # rather than charging ahead and failing against the real API.
+        if order.get("approval_url") and order.get("status") not in {"APPROVED", "COMPLETED"}:
+            payment = Payment(
+                id=f"pay_{uuid.uuid4().hex[:10]}",
+                authority_id=authority.id,
+                payee=payee,
+                amount=round(amount, 2),
+                currency=authority.currency,
+                purpose=purpose or authority.purpose,
+                created_at=_iso(moment),
+                expires_at=_iso(moment + timedelta(minutes=authority.ttl_minutes)),
+                order_id=order["order_id"],
+                authorization_id=None,
+                approval_url=order["approval_url"],
+                state=PENDING_APPROVAL,
+            )
+            self.ledger.save_authority(authority, payment.created_at)
+            self.ledger.save_payment(payment)
+            self._action(
+                payment=payment,
+                kind="create_order",
+                amount=payment.amount,
+                allowed=True,
+                actor="agent",
+                reason="order created; waiting for the payer to approve it",
+                counterfactual=None,
+                checks=(Check("authority.ceiling", True, f"inside {authority.ceiling:.2f}"),),
+                rail=order,
+            )
+            return payment
+
         authorization = self.rail.authorize(order["order_id"])
 
         payment = Payment(
@@ -210,18 +274,94 @@ class Engine:
         )
         if not late:
             return self._refuse(payment, "expire", None, actor, checks, list(checks))
+
+        # Expiring in the ledger is a claim about our own record. The money is held by PayPal, and
+        # a local expiry does not release anything there: an authorisation that lapses locally but
+        # stays open at the rail is a hold on a customer's card that nobody is watching. Void it.
+        rail_out: dict = {}
+        if payment.authorization_id and payment.captured == 0:
+            try:
+                rail_out = self.rail.void(payment.authorization_id)
+            except Exception as exc:  # noqa: BLE001 - reconcile, never pretend it succeeded
+                rail_out = {"status": "VOID_FAILED", "reason": str(exc)}
+                self.ledger.save_payment(payment)
+                return self._action(
+                    payment=payment,
+                    kind="expire",
+                    amount=payment.remaining,
+                    allowed=False,
+                    actor=actor,
+                    reason=(
+                        "authorisation lapsed and the external hold could not be released; "
+                        "this needs a human before anyone calls the money safe"
+                    ),
+                    counterfactual=f"void {payment.authorization_id} at the rail",
+                    checks=checks,
+                    rail=rail_out,
+                )
+
         payment.state = EXPIRED
         self.ledger.save_payment(payment)
+        released = "and the external authorisation was voided" if rail_out else ""
         return self._action(
             payment=payment,
             kind="expire",
             amount=payment.remaining,
             allowed=True,
             actor=actor,
-            reason="authorisation lapsed; the commitment is released",
+            reason=f"authorisation lapsed; the commitment is released {released}".strip(),
             counterfactual=None,
             checks=checks,
-            rail={},
+            rail=rail_out,
+        )
+
+    def _refuse_character(
+        self, *, payment: Any, authority: Authority, amount: float, payee: Payee, judgement: Any
+    ) -> Action:
+        """Record an out-of-character refusal with the reasoning that produced it.
+
+        A refused payment still needs a receipt: the point of the product is that a decision can be
+        examined afterwards, including - especially - a decision not to pay.
+        """
+        reason = (
+            f"out of character for {authority.id}: conformance {judgement.conformance:.2f} "
+            f"below {authority.min_conformance:.2f}. {judgement.explanation}"
+        )
+        checks = tuple(
+            Check(
+                f"character.{r.component}",
+                r.score >= 0.7,
+                r.detail,
+            )
+            for r in judgement.reasons
+        )
+        counterfactual = (
+            f"a conformance of at least {authority.min_conformance:.2f}, or an authority that "
+            f"permits this payee and purpose"
+        )
+        stub = payment
+        if stub is None:
+            stub = Payment(
+                id=f"pay_{uuid.uuid4().hex[:10]}",
+                authority_id=authority.id,
+                payee=payee,
+                amount=round(amount, 2),
+                currency=authority.currency,
+                purpose=authority.purpose,
+                created_at=_iso(self.clock()),
+                expires_at=_iso(self.clock()),
+            )
+        self.ledger.save_authority(authority, stub.created_at)
+        return self._action(
+            payment=stub,
+            kind="authorise",
+            amount=round(amount, 2),
+            allowed=False,
+            actor="agent",
+            reason=reason,
+            counterfactual=counterfactual,
+            checks=checks,
+            rail={"character": judgement.public()},
         )
 
     # ── rules ─────────────────────────────────────────────────────────────────────────────
