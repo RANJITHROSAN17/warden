@@ -373,3 +373,85 @@ def test_the_evidence_rule_is_recorded_in_the_receipt() -> None:
     from warden.demo import run_payout_story
 
     assert run_payout_story("simulated") == 0
+
+
+# ── negotiation: two agents, one ceiling ────────────────────────────────────────────────────
+
+
+def test_the_buyer_never_offers_above_the_ceiling() -> None:
+    """A model that can be talked past a limit is not a control."""
+    from warden.negotiate import Seller, negotiate
+
+    mandate = standard_mandate(new_gateway() if False else new_gateway(), ceiling=500.0)
+    deal = negotiate(mandate, "6 x toner", Seller(list_price=534.0, floor=505.0), use_model=False)
+    offers = [r.price for r in deal.rounds if r.speaker == "buyer"]
+    assert offers, "the buyer must make an offer"
+    assert max(offers) <= mandate.ceiling
+
+
+def test_a_seller_whose_floor_is_above_the_ceiling_ends_in_a_walk_away() -> None:
+    from warden.negotiate import Seller, negotiate
+
+    mandate = standard_mandate(new_gateway(), ceiling=500.0)
+    deal = negotiate(mandate, "6 x toner", Seller(list_price=534.0, floor=505.0), use_model=False)
+    assert deal.succeeded is False
+    assert deal.walk_away_reason and "ceiling" in deal.walk_away_reason
+
+
+def test_a_seller_who_can_meet_the_ceiling_gets_a_deal() -> None:
+    from warden.negotiate import Seller, negotiate
+
+    mandate = standard_mandate(new_gateway(), ceiling=500.0)
+    deal = negotiate(mandate, "5 x toner", Seller(list_price=445.0, floor=430.0), use_model=False)
+    assert deal.succeeded is True
+    assert deal.agreed_price <= mandate.ceiling
+
+
+# ── remediation: the agent reads its own refusal ───────────────────────────────────────────
+
+
+def test_the_agent_drops_out_of_scope_lines_then_fits_the_ceiling() -> None:
+    from warden import remediate
+
+    gateway = new_gateway()
+    mandate = standard_mandate(gateway, ceiling=200.0)
+    plan = (item("SKU-ESPRESSO", 1), item("SKU-TONER", 2))
+    result = remediate.run(
+        gateway, mandate, vendor("V-ACME"), plan, "restock office supplies for the quarter"
+    )
+    assert result.final.outcome is Outcome.ALLOW
+    assert result.revisions[0].action == "drop-out-of-scope"
+    assert result.stopped_because == "remediated inside the mandate"
+
+
+def test_the_agent_will_not_fix_an_unapproved_vendor_by_rephrasing() -> None:
+    from warden import remediate
+
+    gateway = new_gateway()
+    mandate = standard_mandate(gateway, ceiling=200.0)
+    result = remediate.run(
+        gateway, mandate, vendor("V-FRESH"), (item("SKU-PAPER", 2),), "restock printer paper"
+    )
+    assert result.final.outcome is Outcome.HOLD
+    assert result.revisions == ()
+    assert "cannot be fixed" in result.stopped_because
+
+
+def test_every_remediation_attempt_keeps_its_own_receipt() -> None:
+    """The chain is the evidence: a restated intent is visible as a change, not a settled fact."""
+    from warden import remediate
+
+    gateway = new_gateway()
+    mandate = standard_mandate(gateway, ceiling=200.0)
+    plan = (item("SKU-ESPRESSO", 1), item("SKU-TONER", 2))
+    result = remediate.run(
+        gateway, mandate, vendor("V-ACME"), plan, "restock office supplies for the quarter"
+    )
+    assert len(result.decisions) >= 2
+    for _, decision_id in result.decisions:
+        assert gateway.ledger.verify(decision_id)[0] is True
+    intents = {
+        gateway.ledger.receipt(decision_id)["payload"]["attempt"]["stated_intent"]
+        for _, decision_id in result.decisions
+    }
+    assert len(intents) > 1, "the restated intent must be visible in the chain"

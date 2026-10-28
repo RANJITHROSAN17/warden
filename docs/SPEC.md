@@ -94,10 +94,42 @@ the **one-time grant** that releases exactly one held basket by fingerprint.
 | **JS SDK / Buttons / Payment Links** | Not used | The buyer is an agent, not a human with a browser. Using a checkout button would be theatre — say so rather than bolt it on |
 | **Payouts, Subscriptions, Invoicing, Pay Later, Donations** | Not used in v1 | Named here so the omission is a decision, not an oversight. Payouts is the natural v2 rail for the contractor story |
 
-## 6. AI surfaces — three jobs, kept separate
+## 6. Where the AI is — and why it is visible
+
+PayPal's brief asks what happens "when you put AI behind the wheel". It is worth being precise
+about which wheel, because a rules engine with one classifier bolted on does not answer that
+question.
+
+Warden runs **four distinct model jobs**, and three of them are agentic — the model acts, observes
+the consequence, and acts again:
+
+| # | Job | Where | What makes it agentic |
+|---|---|---|---|
+| 1 | **Negotiate a price** with a merchant agent | `negotiate.py` | Multi-round: proposes, reads the counter, re-proposes, and walks away rather than breach its ceiling |
+| 2 | **Repair its own refusal** | `remediate.py` | Reads the counterfactual from a held decision, changes the basket, resubmits, observes again — up to three attempts, never outside the rules |
+| 3 | **Judge intent** | `intent.py` | Scores the basket against the agent's stated reason and must cite the evidence |
+| 4 | **Plan the purchase** | `agent.py` | Turns a goal into a basket, which is then judged like anyone else's |
+
+The loop that matters for "AI behind the wheel":
+
+```
+plan → negotiate → attempt → HOLD(reason + counterfactual) → revise → attempt → ALLOW → receipt
+```
+
+Every arrow after `attempt` is the model reacting to a consequence rather than producing text. That
+is the difference between an AI feature and an AI actor.
+
+**And the fence is deliberately deterministic.** Rules, thresholds, fingerprints and signatures are
+plain code, because a control that a persuasive counterparty can talk around is not a control. The
+model writes the message; the mandate decides the number. Saying that out loud is stronger than
+pretending everything is a model.
+
+### 6b. AI surfaces — the original breakdown
 
 | Job | Where | Model | Failure mode if it is wrong |
 |---|---|---|---|
+| **Negotiation** — arguing a price across rounds | `negotiate.ModelBuyer` | Any OpenAI-compatible endpoint; deterministic negotiator as fallback | A deal above the ceiling; caught by the rules before any PayPal call |
+| **Remediation** — repairing a refused basket | `remediate.py` | Deterministic logic on structured refusals | Wearing the gate down by retrying; capped at three attempts, and four refusal types are unfixable by design |
 | **Judging intent** — does the basket match the stated reason | `intent.ModelJudge` | Any OpenAI-compatible endpoint; deterministic lexical judge as fallback | A wrong score holds a good payment (recoverable by grant) or allows a drifted one (caught by the evidence and category rules) |
 | **Planning the purchase** — turning a goal into a basket | `agent.plan` | Same endpoint | A silly basket; still judged by the same rules. The agent is not trusted |
 | **Explaining the refusal** — one sentence a human can act on | Template text today; model-assisted later | — | Vague refusals train people to click approve without reading, which is the failure being prevented |
@@ -130,7 +162,7 @@ flowchart LR
 Storage: SQLite. API: FastAPI + `openapi.yaml` (9 paths, 7 schemas). UI: AG Grid + a plain-table
 fallback.
 
-## 8. The two demo stories
+## 8. The four demo stories
 
 **Story A — the agent that drifts (purchase).** Six scenarios: a normal restock (allow), a $480
 espresso machine under a $500 ceiling (hold, intent 0.00), an over-ceiling order (hold, 34.00
@@ -142,7 +174,21 @@ order is paid; then the same contractor bills a full order where one deliverable
 over. The claim and the basket agree — and it is **held on evidence**, not on prose. This is the
 scenario that maps to PayPal's own "pays contractors when a job is marked complete".
 
-Both stories run offline. Both produce verify-able receipts. Both are the same engine.
+**Story C — two agents negotiate (Agent→Agent commerce).**
+`python -m warden.demo --story negotiate`. A buyer agent and a merchant agent argue over six toner
+cartridges. The seller's floor is 505.00, the mandate ceiling is 500.00, so the buyer climbs
+440 → 470 → 485 → 492.50 → **walks away**. It does not concede past its limit. Then it negotiates a
+smaller basket at 445.00 and Warden allows it. Closing line: *a model that can talk its way past a
+limit is not a control.*
+
+**Story D — the agent repairs itself.**
+`python -m warden.demo --story heal`. The agent plans 658.00 of espresso machine and toner against
+a 200.00 mandate. Hold. It reads the counterfactual, drops the out-of-scope electronics, then
+restates a genuinely inaccurate intent, then pays 178.00. Three receipts, and the intent change is
+visible in the chain — which is why the chain is the evidence. Then an unapproved vendor: no
+revision attempted, loop stops, human needed.
+
+All four stories run offline, produce verifiable receipts, and are the same engine.
 
 ## 9. Scope, in three buckets
 

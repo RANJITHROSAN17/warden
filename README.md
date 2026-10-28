@@ -44,6 +44,28 @@ Warden adds the two dimensions a tool flag cannot express:
 It is complementary to the Toolkit, not a replacement: put Warden in front of the PayPal tools and
 they inherit authority and evidence.
 
+## Where the AI actually is
+
+Four model jobs, three of them agentic — the model acts, sees what happened, and acts again:
+
+| # | Job | Agentic because |
+|---|---|---|
+| 1 | **Negotiate** a price with a merchant agent (`negotiate.py`) | Multi-round: proposes, reads the counter, re-proposes, and **walks away** rather than breach its ceiling |
+| 2 | **Repair its own refusal** (`remediate.py`) | Reads the counterfactual from a held decision, changes the basket, resubmits, observes again |
+| 3 | **Judge intent** (`intent.py`) | Scores the basket against the agent's stated reason and must cite the evidence |
+| 4 | **Plan the purchase** (`agent.py`) | Turns a goal into a basket, which is then judged like anyone else's |
+
+```
+plan → negotiate → attempt → HOLD(reason + counterfactual) → revise → attempt → ALLOW → receipt
+```
+
+Every arrow after `attempt` is a model reacting to a consequence, not producing text. That is the
+difference between an AI feature and an AI actor.
+
+**The fence under it is deliberately deterministic.** Rules, thresholds, fingerprints and
+signatures are plain code, because a control a persuasive counterparty can talk around is not a
+control. The model writes the message; the mandate decides the number.
+
 ## What it does
 
 Before an agent can spend, it is given a **mandate**: one purpose, one ceiling, a category scope,
@@ -193,6 +215,34 @@ Every decision above, paid or refused, is a signed receipt:
 ```
 
 <sub>Ids and hashes vary per run; every decision, rule and gate is deterministic.</sub>
+
+### Two agents negotiate
+
+```bash
+python -m warden.demo --story negotiate
+```
+
+```
+seller    534.00 USD  listed price
+buyer     440.00 USD  I can commit 440.00 USD. That is my budget for 6 x toner cartridges.
+seller    505.00 USD  Best we can offer is 505.00 USD; costs have moved.
+buyer     470.00 USD  ...
+buyer   walk away     seller's floor 505.00 USD is above the mandate ceiling 500.00 USD
+```
+
+The buyer does not concede past its limit — it negotiates a **smaller basket** instead (445.00,
+allowed). And if it had settled at 534 anyway, the rules would have held it. The negotiation is the
+model's; the ceiling is not.
+
+### The agent repairs itself
+
+```bash
+python -m warden.demo --story heal
+```
+
+Plans 658.00 against a 200.00 mandate → held → reads the counterfactual → drops the out-of-scope
+electronics → restates an inaccurate intent → pays 178.00 through the same six rules. Three
+receipts chain the intent change, so the rewrite is visible rather than settled.
 
 ### The second story: paying for work, not goods
 

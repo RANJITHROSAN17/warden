@@ -18,6 +18,7 @@ from warden.catalog import item, vendor
 from warden.gateway import Gateway
 from warden.ledger import Ledger
 from warden.models import Decision, LineItem, Outcome, Vendor
+from warden.negotiate import Seller, negotiate
 from warden.paypal import PayPalError, SandboxPayPal, SimulatedPayPal
 from warden.workorder import Deliverable, WorkOrder
 
@@ -294,6 +295,170 @@ def run_payout_story(mode: str = "auto") -> int:
     return 0
 
 
+def run_negotiation_story(mode: str = "auto") -> int:
+    """Two agents haggle; the mandate decides whether the deal may settle.
+
+    The interesting part is the failure. A buyer agent that concedes past its ceiling and lets
+    the payer discover the overrun is the whole problem - so here the agent walks away, and then
+    fixes its own problem by buying less rather than by spending more.
+    """
+    gateway = Gateway(ledger=Ledger(":memory:"), rail=select_rail(mode))
+    mandate = gateway.issue_mandate(
+        purpose="Q4 office restock - toner",
+        ceiling=500.0,
+        categories=("office_supplies",),
+        min_vendor_age_days=30,
+        intent_threshold=0.55,
+    )
+
+    print()
+    print("WARDEN  -  two agents negotiate, the mandate decides")
+    print(RULE)
+    print(f"mode      {gateway.rail.mode}")
+    print(f"mandate   {mandate.id}   ceiling {mandate.ceiling:.2f} {mandate.currency}")
+    print(f"purpose   {mandate.purpose}")
+    print(RULE)
+    print()
+
+    # ── Round one: six cartridges, a seller whose floor is above the ceiling ──────────────
+    seller = Seller(list_price=534.0, floor=505.0, firmness=0.08)
+    deal = negotiate(mandate, "6 x toner cartridges", seller)
+    print(f"negotiation 1  ({deal.planner})")
+    for line in deal.transcript:
+        print("   " + line)
+    print()
+
+    if deal.succeeded:
+        decision, decision_id = gateway.attempt(
+            mandate,
+            vendor("V-ACME"),
+            [item("SKU-TONER", 6)],
+            "restock printer toner for the office",
+        )
+        print(_line(decision, "1 as negotiated"))
+        return 0
+
+    # The dealer could not be moved under the ceiling. The agent does NOT settle anyway - and
+    # that refusal is the product. What it does instead is ask for less.
+    print("   → no deal inside the ceiling. The agent buys less rather than spending more.")
+    print()
+
+    # ── Round two: the same negotiation for a smaller basket ─────────────────────────────
+    seller2 = Seller(list_price=445.0, floor=430.0, firmness=0.25)
+    deal2 = negotiate(mandate, "5 x toner cartridges", seller2)
+    print(f"negotiation 2  ({deal2.planner})")
+    for line in deal2.transcript:
+        print("   " + line)
+    print()
+
+    decision, decision_id = gateway.attempt(
+        mandate,
+        vendor("V-ACME"),
+        [item("SKU-TONER", 5)],
+        "restock printer toner for the office",
+    )
+    print(_line(decision, "2 settled and paid"))
+    print(
+        f"       paypal      {decision.paypal.get('order_id')} → "
+        f"{decision.paypal.get('authorization_id')}"
+    )
+    print(f"       receipt     {decision_id}")
+    print()
+
+    # ── The guard still wins when the agent is wrong ─────────────────────────────────────
+    print("   ...and if the agent had settled at 534 anyway:")
+    over, over_id = gateway.attempt(
+        mandate,
+        vendor("V-ACME"),
+        [item("SKU-TONER", 6)],
+        "restock printer toner for the office",
+    )
+    print(_line(over, "3 over ceiling"))
+    print(f"       because     {over.reasons[0]}")
+    print(f"       would need  {over.counterfactual}")
+    print(f"       receipt     {over_id}")
+    print()
+
+    print(RULE)
+    ok, message = gateway.ledger.verify(decision_id)
+    print(f"verify {decision_id}  →  {ok}  ({message})")
+    print()
+    print("A model that can talk its way past a limit is not a control. The negotiation is the")
+    print("model's; the ceiling is not.")
+    print()
+    return 0
+
+
+def run_heal_story(mode: str = "auto") -> int:
+    """The agent reads its own refusal and fixes the basket - inside the same fence.
+
+    This is the loop that separates an agent from a script: a hold is not a dead end, it is an
+    instruction. Every revision goes back through the same rules, so "self-healing" can never
+    mean "gate-eroding" - and the two refusals it is not allowed to fix stay fixed.
+    """
+    from warden import remediate
+
+    gateway = Gateway(ledger=Ledger(":memory:"), rail=select_rail(mode))
+    mandate = gateway.issue_mandate(
+        purpose="Q4 office restock",
+        ceiling=200.0,
+        categories=("office_supplies",),
+        min_vendor_age_days=30,
+        intent_threshold=0.55,
+    )
+
+    print()
+    print("WARDEN  -  the agent reads its refusal and acts on it")
+    print(RULE)
+    print(f"mode      {gateway.rail.mode}")
+    print(f"ceiling   {mandate.ceiling:.2f} {mandate.currency}")
+    print(f"scope     {list(mandate.allowed_categories)}")
+    print(RULE)
+    print()
+
+    # The agent's first idea is bad: an espresso machine plus a toner, over budget and half of
+    # it out of scope. This is the plan, not a strawman - agents do this.
+    plan = (item("SKU-ESPRESSO", 1), item("SKU-TONER", 2))
+    result = remediate.run(
+        gateway, mandate, vendor("V-ACME"), plan, "restock office supplies for the quarter"
+    )
+
+    for index, (decision, decision_id) in enumerate(result.decisions, start=1):
+        print(_line(decision, f"{index} attempt"))
+        if decision.outcome is not Outcome.ALLOW:
+            for reason in decision.reasons:
+                print(f"       because     {reason}")
+            print(f"       receipt     {decision_id}")
+        else:
+            print(
+                f"       paypal      {decision.paypal.get('order_id')} → "
+                f"{decision.paypal.get('authorization_id')}"
+            )
+        print()
+
+    for revision in result.revisions:
+        print(f"   revision {revision.attempt}: {revision.action}")
+        print(f"   {revision.explanation}")
+        print()
+
+    print(RULE)
+    print(f"stopped because: {result.stopped_because}")
+    ok, message = gateway.ledger.verify(result.decisions[-1][1])
+    print(f"verify final receipt  →  {ok}  ({message})")
+    print()
+
+    # And the case it must not fix: a new payee. An agent that talks its way around this is
+    # not a control, so the loop stops and asks a human.
+    blocked = remediate.run(
+        gateway, mandate, vendor("V-FRESH"), (item("SKU-PAPER", 2),), "restock printer paper"
+    )
+    print(_line(blocked.final, "unfixable case"))
+    print(f"       because     {blocked.final.reasons[0]}")
+    print(f"       loop        {blocked.stopped_because}")
+    print()
+    return 0
+
+
 def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Five scenarios, decided by the real engine.")
     parser.add_argument(
@@ -304,13 +469,20 @@ def _main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--story",
-        choices=["purchase", "payout"],
+        choices=["purchase", "payout", "negotiate", "heal"],
         default="purchase",
-        help="purchase: agent buying goods. payout: paying a contractor for completed work.",
+        help=(
+            "purchase: agent buying goods · payout: paying a contractor · "
+            "negotiate: two agents haggling · heal: agent repairs its own refusal"
+        ),
     )
     args = parser.parse_args(argv)
     if args.story == "payout":
         return run_payout_story(args.rail)
+    if args.story == "negotiate":
+        return run_negotiation_story(args.rail)
+    if args.story == "heal":
+        return run_heal_story(args.rail)
     return run(args.rail)
 
 
