@@ -12,6 +12,7 @@ import argparse
 import sys
 from datetime import datetime, timedelta, timezone
 
+from grace import character as character_mod
 from grace import compensate
 from grace import dispute as dispute_mod
 from grace import verify as verify_mod
@@ -462,6 +463,117 @@ def story_market(mode: str = "auto") -> int:
     return 0
 
 
+def _character_histories() -> dict[str, character_mod.Character]:
+    def spent(
+        prefix: str, rows: list[tuple[str, str, float, str]]
+    ) -> tuple[character_mod.Spent, ...]:
+        return tuple(
+            character_mod.Spent(f"{prefix}_{i}", vendor, purpose, amount, at)
+            for i, (vendor, purpose, amount, at) in enumerate(rows, start=1)
+        )
+
+    studio = spent(
+        "st",
+        [
+            (
+                "PixelForge Design",
+                "campaign artwork for spring launch",
+                460.0,
+                "2026-07-14T11:20:00",
+            ),
+            ("PixelForge Design", "campaign artwork revisions", 210.0, "2026-08-02T15:05:00"),
+            ("Adobe Stock", "artwork licence renewal", 340.0, "2026-08-21T09:40:00"),
+            ("PixelForge Design", "campaign artwork autumn", 520.0, "2026-09-11T14:10:00"),
+            ("Figma", "design seats", 288.0, "2026-09-30T10:15:00"),
+            ("PixelForge Design", "campaign artwork winter", 480.0, "2026-10-12T13:45:00"),
+        ],
+    )
+    wholesaler = spent(
+        "wh",
+        [
+            ("Copperline Supply", "copper fittings restock", 1820.0, "2026-07-21T08:10:00"),
+            ("Northfield Freight", "pallet freight", 640.0, "2026-08-05T07:55:00"),
+            ("Copperline Supply", "brass valves", 1240.0, "2026-08-29T09:20:00"),
+            ("Northfield Freight", "pallet freight", 715.0, "2026-09-18T08:05:00"),
+            ("Copperline Supply", "copper fittings restock", 1990.0, "2026-10-07T08:35:00"),
+        ],
+    )
+    legal = spent(
+        "lg",
+        [
+            ("Court Filing Services", "filing fees", 420.0, "2026-07-09T16:30:00"),
+            ("Westlaw", "research subscription", 980.0, "2026-08-01T11:00:00"),
+            ("Court Filing Services", "filing fees", 380.0, "2026-09-14T15:20:00"),
+            ("Hollywood Storage", "case file storage", 300.0, "2026-09-28T10:40:00"),
+            (
+                "Marble Creative",
+                "brand identity artwork for brochure",
+                510.0,
+                "2026-10-16T12:05:00",
+            ),
+        ],
+    )
+    return {
+        "a design studio": character_mod.Character("a design studio", studio),
+        "a plumbing wholesaler": character_mod.Character("a plumbing wholesaler", wholesaler),
+        "a law firm": character_mod.Character("a law firm", legal),
+    }
+
+
+def story_character(mode: str = "auto") -> int:
+    """The same payment, judged against three different businesses.
+
+    A rule cannot tell these apart, because the payment is identical. Only the account's own history
+    differs - and that history is the thing PayPal holds and nobody else does.
+    """
+    _header("the same payment, three businesses, three answers", "no rail - decided before money")
+
+    request = character_mod.Request(
+        vendor="PixelForge Design",
+        purpose="campaign artwork for spring launch",
+        amount=480.0,
+        at="2026-10-29T11:05:00",
+    )
+    print(f"request   pay {request.vendor} {request.amount:.2f} for '{request.purpose}'")
+    print("          identical in every diagram below. no ceiling is consulted.")
+    print()
+
+    for name, holder in _character_histories().items():
+        verdict = character_mod.judge(holder, request, base_ceiling=500.0)
+        print(f"{name}")
+        print(f"        conformance {verdict.conformance:.2f}   ->  {verdict.decision.upper()}")
+        for reason in verdict.reasons:
+            mark = "ok  " if reason.score >= 0.7 else ("..." if reason.score >= 0.4 else "MISS")
+            print(f"          {mark}  {reason.component:<8} {reason.detail}")
+            if reason.cites:
+                print(f"                cites {', '.join(reason.cites)}")
+        print(f"        because     {verdict.explanation}")
+        print(f"        ceiling     500.00 base -> {verdict.suggested_ceiling:.2f} suggested")
+        print()
+
+    print("Not one of these is a rule. The payment is the same and the answer is different,")
+    print("because the account is different. That is a judgment about character.")
+    print()
+
+    print("And the judgment bites the account it trusts most:")
+    studio = _character_histories()["a design studio"]
+    odd = character_mod.Request(
+        vendor="Unregistered Holdings Ltd",
+        purpose="urgent cryptocurrency settlement",
+        amount=9600.0,
+        at="2026-10-29T03:12:00",
+    )
+    verdict = character_mod.judge(studio, odd, base_ceiling=500.0)
+    print(f"request   pay {odd.vendor} {odd.amount:.2f} for '{odd.purpose}' at 03:12")
+    print(f"        conformance {verdict.conformance:.2f}   ->  {verdict.decision.upper()}")
+    print(f"        because     {verdict.explanation}")
+    print()
+    print("A design studio is allowed to buy design. It is not allowed to become a different")
+    print("company at three in the morning - and the agent can say exactly why.")
+    print()
+    return 0
+
+
 STORIES = {
     "full": story_full,
     "partial": story_partial,
@@ -471,6 +583,7 @@ STORIES = {
     "defend": story_defend,
     "alert": story_alert,
     "market": story_market,
+    "character": story_character,
 }
 
 
@@ -492,6 +605,7 @@ def _main(argv: list[str] | None = None) -> int:
                 "defend",
                 "alert",
                 "market",
+                "character",
             ):
                 STORIES[name](args.rail)
             return 0

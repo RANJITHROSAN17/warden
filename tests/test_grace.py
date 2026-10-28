@@ -555,3 +555,84 @@ def test_the_default_provider_calls_nothing_and_is_still_grounded() -> None:
     assert result["provider"] == "template"
     assert result["grounding"]["ok"] is True
     assert "does not assert any fact" in result["text"]
+
+
+# ── character: the same payment, judged against different businesses ────────────────────────
+
+
+def _holders():
+    from grace.demo import _character_histories
+
+    return _character_histories()
+
+
+def _request():
+    from grace import character as c
+
+    return c.Request(
+        vendor="PixelForge Design",
+        purpose="campaign artwork for spring launch",
+        amount=480.0,
+        at="2026-10-29T11:05:00",
+    )
+
+
+def test_one_payment_gets_three_different_answers_from_three_businesses() -> None:
+    """Identical input, different verdict, because the history differs."""
+    from grace import character as c
+
+    holders = _holders()
+    studio = c.judge(holders["a design studio"], _request())
+    wholesaler = c.judge(holders["a plumbing wholesaler"], _request())
+    firm = c.judge(holders["a law firm"], _request())
+
+    assert studio.decision == "allow"
+    assert wholesaler.decision == "escalate"
+    assert firm.decision == "hold"
+    assert studio.conformance > firm.conformance > wholesaler.conformance
+
+
+def test_an_account_in_character_earns_a_higher_ceiling() -> None:
+    """The economic point: safe judgment is what lets the ceiling rise."""
+    from grace import character as c
+
+    trusted = c.judge(_holders()["a design studio"], _request(), base_ceiling=500.0)
+    stranger = c.judge(_holders()["a plumbing wholesaler"], _request(), base_ceiling=500.0)
+
+    assert trusted.suggested_ceiling > 500.0
+    assert stranger.suggested_ceiling == 500.0
+
+
+def test_a_trusted_account_is_still_stopped_when_it_behaves_out_of_character() -> None:
+    from grace import character as c
+
+    odd = c.Request(
+        vendor="Unregistered Holdings Ltd",
+        purpose="urgent cryptocurrency settlement",
+        amount=9600.0,
+        at="2026-10-29T03:12:00",
+    )
+    verdict = c.judge(_holders()["a design studio"], odd)
+    assert verdict.decision == "escalate"
+    assert verdict.conformance < c.HOLD_AT
+
+
+def test_every_judgement_names_the_record_it_rests_on() -> None:
+    """A checkable judgment: no reason may be unfalsifiable."""
+    from grace import character as c
+
+    verdict = c.judge(_holders()["a design studio"], _request())
+    used = [r for r in verdict.reasons if r.score >= 0.7]
+    assert used
+    assert any(r.cites for r in used), "a favourable reason must cite prior payments"
+    for reason in verdict.reasons:
+        assert reason.detail
+        assert reason.component in {"vendor", "purpose", "amount", "rhythm"}
+
+
+def test_an_empty_history_does_not_pretend_to_know() -> None:
+    from grace import character as c
+
+    verdict = c.judge(c.Character("a new account"), _request())
+    assert verdict.decision in {"hold", "escalate"}
+    assert any("no history" in r.detail for r in verdict.reasons)
