@@ -365,3 +365,69 @@ def triage_alert(alert: Alert, evidence: list[Evidence]) -> Triage:
         f"evidence; refunding would give away a case that can be won.",
         True,
     )
+
+
+# ── settlement ──────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Settlement:
+    """What to do at the amicable stage, and the price above which doing nothing is better.
+
+    This is not a probability model. Grace has no outcome history yet, so it does not invent one.
+    It gives the merchant a boundary they can argue with: contesting risks the amount plus the fee
+    whenever it fails, so any offer below that risk-weighted figure is cheaper than fighting.
+    """
+
+    dispute_id: str
+    recommendation: str  # contest | offer | accept
+    ceiling: float
+    rationale: str
+    assumption: str
+
+    def public(self) -> dict[str, Any]:
+        return {
+            "dispute_id": self.dispute_id,
+            "recommendation": self.recommendation,
+            "ceiling": round(self.ceiling, 2),
+            "rationale": self.rationale,
+            "assumption": self.assumption,
+        }
+
+
+def settle(dispute: Dispute, assessment: Assessment, fee: float = 0.0) -> Settlement:
+    coverage = assessment.coverage
+    risk = dispute.amount + max(fee, 0.0)
+    assumption = (
+        "the coverage figure is treated as a fair estimate of winning; Grace has no outcome "
+        "history yet and does not pretend to one"
+    )
+
+    if assessment.recommendation == "accept":
+        return Settlement(
+            dispute.id,
+            "accept",
+            dispute.amount,
+            "the decisive evidence does not exist, so the claim is owed. Offering a discount on a "
+            "debt the merchant cannot disprove is not a strategy, it is a fee with extra steps.",
+            assumption,
+        )
+    if coverage >= 1.0:
+        return Settlement(
+            dispute.id,
+            "contest",
+            0.0,
+            "every requirement is covered. An offer here gives away money the evidence "
+            "already wins.",
+            assumption,
+        )
+    ceiling = risk * (1.0 - coverage)
+    return Settlement(
+        dispute.id,
+        "offer",
+        ceiling,
+        f"decisive evidence exists but supporting evidence does not ({coverage:.2f} coverage). "
+        f"Contesting risks {risk:.2f} whenever it fails, so an offer below {ceiling:.2f} is "
+        f"cheaper than fighting; anything above it is cheaper to contest.",
+        assumption,
+    )

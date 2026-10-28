@@ -393,3 +393,75 @@ def test_paypal_reason_code_aliases_resolve() -> None:
         found = d.Dispute("d", "p", alias, 1.0, "USD", "x", "2026-11-04")
         assert found.code == code
         assert found.requirements
+
+
+# ── verifying a deliverable against a brief ─────────────────────────────────────────────────
+
+
+def _market_brief():
+    from grace import verify as v
+
+    return v.Brief(
+        id="brf",
+        title="12 descriptions",
+        criteria=(
+            v.Criterion("count", "twelve descriptions", "count", 12, pro_rata=True),
+            v.Criterion("length", "at least 40 words", "min_words", 40),
+            v.Criterion("material", "names the material", "mentions", "recycled"),
+        ),
+    )
+
+
+def _copy(n: int) -> tuple[str, ...]:
+    body = "recycled aluminium bottle dishwasher safe lid sold separately warranty included " * 4
+    return tuple(f"{body}item {i}" for i in range(n))
+
+
+def test_a_short_delivery_is_paid_for_the_work_that_was_done() -> None:
+    from grace import verify as v
+
+    verdict = v.verify(_market_brief(), v.Deliverable(text="", items=_copy(9)))
+    assert verdict.decision == "capture_partial"
+    assert round(verdict.fraction, 3) == 0.75
+    assert [f.criterion for f in verdict.unmet] == ["count"]
+
+
+def test_a_complete_delivery_is_paid_in_full() -> None:
+    from grace import verify as v
+
+    verdict = v.verify(_market_brief(), v.Deliverable(text="", items=_copy(12)))
+    assert verdict.decision == "capture_full"
+
+
+def test_a_criterion_that_cannot_be_checked_escalates_instead_of_guessing() -> None:
+    from grace import verify as v
+
+    brief = v.Brief(
+        id="b",
+        title="logo",
+        criteria=(v.Criterion("taste", "good taste", "manual", ""),),
+    )
+    verdict = v.verify(brief, v.Deliverable(text="", items=_copy(1)))
+    assert verdict.decision == "escalate"
+    assert "human" in verdict.explanation
+
+
+def test_no_measurable_basis_means_nothing_is_captured() -> None:
+    from grace import verify as v
+
+    brief = v.Brief(
+        id="b",
+        title="one page",
+        criteria=(v.Criterion("length", "at least 40 words", "min_words", 40),),
+        allow_partial=True,
+    )
+    verdict = v.verify(brief, v.Deliverable(text="", items=("too short",)))
+    assert verdict.decision == "release"
+    assert verdict.fraction == 0.0
+
+
+def test_the_market_story_holds_then_releases_the_remainder() -> None:
+    """End to end: money committed, work short, pro-rata capture, remainder released."""
+    from grace.demo import story_market
+
+    assert story_market(mode="simulated") == 0

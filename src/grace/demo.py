@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 
 from grace import compensate
 from grace import dispute as dispute_mod
+from grace import verify as verify_mod
 from grace.engine import Engine
 from grace.ledger import Ledger
 from grace.models import Action, Authority, Payee, Payment
@@ -376,6 +377,91 @@ def story_alert(mode: str = "auto") -> int:
     return 0
 
 
+def story_market(mode: str = "auto") -> int:
+    """One agent hires another. The money is held until the work meets the brief.
+
+    This is the product in its natural shape: authorise, deliver, check, then capture or release.
+    A purchase with a card moves through those stages in one step; contract work cannot.
+    """
+    rail = make_rail(mode)
+    ledger = Ledger()
+    engine = Engine(ledger, rail)
+    _header("an agent hires an agent, and the money waits for the work", rail)
+
+    authority = Authority(
+        id="auth_catalogue",
+        purpose="catalogue copy, 12 SKUs",
+        ceiling=200.0,
+        ttl_minutes=60,
+    )
+    seller = Payee(id="AG-COPY", name="Copy Agent")
+    print("buyer     procurement agent wants 12 product descriptions")
+    print("seller    a copywriting agent quotes 120.00 USD")
+    print()
+
+    brief = verify_mod.Brief(
+        id="brf_catalogue",
+        title="12 product descriptions",
+        criteria=(
+            verify_mod.Criterion("count", "twelve descriptions", "count", 12, pro_rata=True),
+            verify_mod.Criterion("length", "40-60 words each", "min_words", 40),
+            verify_mod.Criterion("material", "names the material", "mentions", "recycled"),
+        ),
+    )
+    print("brief     agreed before any money moved")
+    for criterion in brief.criteria:
+        print(f"          - {criterion.label}")
+    print()
+
+    paid = engine.authorise(authority, seller, 120.0)
+    print(f"held      {paid.id}  {paid.amount:.2f} USD authorised")
+    print("          the money is committed and not taken; the seller cannot touch it yet")
+    print()
+
+    nine = tuple(
+        f"Recycled aluminium bottle, {i}00ml, brushed finish, dishwasher safe, lid sold "
+        f"separately, five year warranty included, ships in recycled packaging, made in a "
+        f"solar powered facility, BPA free and phthalate free, leak tested, certified food "
+        f"safe, and fully recyclable at end of life."
+        for i in range(1, 10)
+    )
+    delivered = verify_mod.Deliverable(text="", items=nine, author="AG-COPY")
+    verdict = verify_mod.verify(brief, delivered)
+
+    print(
+        f"delivery  {len(delivered.items)} descriptions, {delivered.words[0]} words each, "
+        f"all naming the material"
+    )
+    for finding in verdict.findings:
+        mark = "ok  " if finding.satisfied else "MISS"
+        print(f"        {mark}  {finding.label:<28} {finding.note}")
+    print()
+    print(f"verdict   {verdict.decision.upper()}  {verdict.explanation}")
+
+    if verdict.decision == "capture_full":
+        engine.capture(paid)
+    elif verdict.decision == "capture_partial":
+        engine.capture(paid, round(paid.amount * verdict.fraction, 2))
+        engine.void(paid)
+    else:
+        engine.void(paid)
+
+    takens = (
+        round(paid.amount * verdict.fraction, 2) if verdict.decision == "capture_partial" else 0.0
+    )
+    print(
+        f"money     captured {takens:.2f}, released {round(paid.amount - takens, 2):.2f} "
+        f"of {paid.amount:.2f}"
+    )
+    print("          both movements are receipted and both can be re-verified")
+    print()
+
+    print("The seller is not robbed and the buyer is not trusting a claim. The brief is the")
+    print("contract, the check is the proof, and the money moves on the result.")
+    print()
+    return 0
+
+
 STORIES = {
     "full": story_full,
     "partial": story_partial,
@@ -384,6 +470,7 @@ STORIES = {
     "expired": story_expired,
     "defend": story_defend,
     "alert": story_alert,
+    "market": story_market,
 }
 
 
@@ -404,6 +491,7 @@ def _main(argv: list[str] | None = None) -> int:
                 "expired",
                 "defend",
                 "alert",
+                "market",
             ):
                 STORIES[name](args.rail)
             return 0

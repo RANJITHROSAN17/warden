@@ -61,6 +61,29 @@
   .verdict .invalid { background:rgba(229,72,77,.16); color:var(--bad); }
   .note { color:var(--dim); font-size:12px; margin-top:12px; }
   .note b { color:var(--ink); }
+  /* the money lifecycle */
+  .flow { display:flex; align-items:stretch; gap:0; margin:6px 0 4px; flex-wrap:wrap; }
+  .flow .card { border-radius:0; border-right:0; min-width:0; flex:1 1 150px; }
+  .flow .card:first-child { border-radius:10px 0 0 10px; }
+  .flow .card:last-of-type { border-right:1px solid var(--line); border-radius:0 10px 10px 0; }
+  .flow .arrow { display:flex; align-items:center; color:#2b3445; padding:0 2px; font-size:15px;
+                 background:var(--panel); border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
+  .flowlabel { color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.8px;
+               margin:14px 0 6px; }
+  .bar { height:5px; border-radius:3px; background:#1b2130; overflow:hidden; margin-top:7px; }
+  .bar .cap { display:block; height:100%; background:var(--ok); }
+  .bar .rel { display:block; height:100%; background:#39445c; }
+  .life { display:flex; gap:0; margin:12px 0 4px; flex-wrap:wrap; }
+  .life .st { flex:1 1 150px; border:1px solid var(--line); border-right:0; padding:10px 12px;
+              background:var(--panel); }
+  .life .st:first-child { border-radius:9px 0 0 9px; }
+  .life .st:last-child { border-right:1px solid var(--line); border-radius:0 9px 9px 0; }
+  .life .st .lab { color:var(--dim); font-size:10.5px; text-transform:uppercase; letter-spacing:.7px; }
+  .life .st .amt { font-size:16px; font-weight:600; margin-top:2px; }
+  .life .st .when { color:var(--dim); font-size:11px; margin-top:1px; }
+  .life .st.done .amt { color:var(--ok); }
+  .life .st.held .amt { color:var(--open); }
+  .life .st.gone .amt { color:var(--dim); }
 </style>
 </head>
 <body>
@@ -71,15 +94,20 @@
   <span class="badge" id="signing">signing: …</span>
 </header>
 <main>
-  <div class="strip">
-    <div class="card"><div class="k">Open — committed, not taken</div><div class="v open" id="s-open">0.00</div>
-      <div class="sub" id="s-open-sub">money at risk in the gap</div></div>
-    <div class="card"><div class="k">Captured</div><div class="v ok" id="s-captured">0.00</div>
-      <div class="sub">settled with the payee</div></div>
-    <div class="card"><div class="k">Released</div><div class="v rel" id="s-released">0.00</div>
-      <div class="sub">authorised, then handed back</div></div>
+  <div class="flowlabel">where the money is, right now</div>
+  <div class="flow">
+    <div class="card"><div class="k">Committed</div><div class="v open" id="s-open">0.00</div>
+      <div class="sub" id="s-open-sub">authorised, not taken — held</div></div>
+    <div class="arrow">›</div>
+    <div class="card"><div class="k">Taken</div><div class="v ok" id="s-captured">0.00</div>
+      <div class="sub">captured and settled</div></div>
+    <div class="arrow">›</div>
+    <div class="card"><div class="k">Given back</div><div class="v rel" id="s-released">0.00</div>
+      <div class="sub">authorised, then released</div></div>
     <div class="card"><div class="k">Payments</div><div class="v" id="s-count" style="font-size:18px">0</div>
       <div class="sub">every one receipted</div></div>
+  </div>
+  <div class="strip">
     <div class="row">
       <button id="seed">Run the five cases</button>
       <button class="ghost" id="tamper">Tamper demo</button>
@@ -89,7 +117,7 @@
 
   <table>
     <thead><tr>
-      <th>State</th><th>Payee</th><th>Authorised</th><th>Captured</th><th>Open</th><th>Payment</th>
+      <th>State</th><th>Payee</th><th>Authorised</th><th>Taken / held</th><th>Still open</th><th>Payment</th>
     </tr></thead>
     <tbody id="rows"><tr><td colspan="6" class="mono">nothing yet — press “Run the five cases”.</td></tr></tbody>
   </table>
@@ -129,6 +157,27 @@ function chip(value) {
   return `<span class="chip ${value}">${String(value).replace("_", " ").toUpperCase()}</span>`;
 }
 
+function bar(p) {
+  const total = p.amount || 0;
+  if (!total) return "";
+  const taken = Math.max(0, Math.min(100, (p.captured / total) * 100));
+  return `<span class="bar"><span class="cap" style="width:${taken}%"></span></span>`;
+}
+
+// The three stages of every payment in this product: committed, taken, released.
+function lifecycle(p) {
+  const held = Math.round((p.amount - p.captured) * 100) / 100;
+  const closed = ["captured", "part_released", "voided", "expired"].includes(p.state);
+  const stages = [
+    ["Authorised", p.amount, "committed, not taken", "held"],
+    ["Captured", p.captured, p.captured > 0 ? "settled" : "nothing taken", p.captured > 0 ? "done" : ""],
+    ["Released", closed ? held : 0, closed ? (held > 0 ? "handed back" : "nothing to hand back") : "still held", closed ? (held > 0 ? "gone" : "") : ""],
+  ];
+  return `<div class="life">${stages.map(([lab, amt, when, cls]) => `
+    <div class="st ${cls}"><div class="lab">${lab}</div>
+      <div class="amt">${money(amt)}</div><div class="when">${when}</div></div>`).join("")}</div>`;
+}
+
 function renderSummary() {
   const s = state.summary || {};
   document.getElementById("s-open").textContent = money(s.open);
@@ -143,7 +192,7 @@ function renderRows() {
       <td>${chip(p.state)}</td>
       <td>${p.payee}</td>
       <td class="mono">${money(p.amount)} ${p.currency}</td>
-      <td class="mono">${money(p.captured)}</td>
+      <td class="mono">${money(p.captured)}${bar(p)}
       <td class="mono">${p.state === "authorised" || p.state === "part_captured" ? money(p.remaining) : "—"}</td>
       <td class="mono">${p.id}</td>
     </tr>`).join("");
@@ -180,6 +229,7 @@ async function selectPayment(paymentId) {
       ${detail.payment.payee.name} — ${money(detail.payment.amount)} ${detail.payment.currency}
       ${chip(detail.payment.state)}
     </h2>
+    ${lifecycle(detail.payment)}
     <div class="note" style="margin-top:0">
       authority <span class="mono">${detail.payment.authority_id}</span> ·
       ${detail.authority.purpose} · expires ${detail.payment.expires_at}
