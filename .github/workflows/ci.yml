@@ -38,7 +38,7 @@ jobs:
 
       # The demo is the product's claim. If it stops running, the claim is gone.
       - name: Offline demo
-        run: python -m warden.demo
+        run: python -m grace.demo --all
 
       - name: Confirm no credential is committed
         run: |

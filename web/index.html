@@ -3,235 +3,191 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Warden — spend authority for AI agents</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@32.2.2/styles/ag-grid.css" />
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@32.2.2/styles/ag-theme-quartz-dark.css" />
+<title>Grace — the agent that finishes the payment</title>
 <style>
   :root { --bg:#0b0d12; --panel:#121621; --line:#1f2634; --ink:#e8edf7; --dim:#8b97ad;
-          --allow:#2fbf71; --hold:#e0a800; --deny:#e5484d; --accent:#5b8def; }
-  * { box-sizing: border-box; }
+          --ok:#2fbf71; --warn:#e0a800; --bad:#e5484d; --open:#5b8def; }
+  * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--ink);
          font:14px/1.5 ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif; }
-  header { display:flex; align-items:baseline; gap:14px; padding:18px 22px 10px; }
+  header { display:flex; align-items:baseline; gap:14px; padding:18px 22px 8px; }
   h1 { font-size:19px; margin:0; letter-spacing:.2px; }
   .tag { color:var(--dim); font-size:13px; }
   .badge { font-size:11px; padding:2px 8px; border:1px solid var(--line); border-radius:999px; color:var(--dim); }
-  .badge.sim { border-color:#3a4152; }
-  main { padding: 0 22px 26px; }
-  .strip { display:flex; gap:10px; margin:10px 0 14px; flex-wrap:wrap; }
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; min-width:128px; }
+  main { padding:0 22px 30px; }
+  .strip { display:flex; gap:10px; margin:10px 0 16px; flex-wrap:wrap; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; min-width:150px; }
   .card .k { color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.8px; }
   .card .v { font-size:22px; font-weight:600; margin-top:2px; }
-  .allow { color:var(--allow); } .hold { color:var(--hold); } .deny { color:var(--deny); }
-  button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:9px 14px;
-           font-weight:600; cursor:pointer; }
+  .card .sub { color:var(--dim); font-size:11px; }
+  .v.open { color:var(--open); } .v.ok { color:var(--ok); } .v.rel { color:var(--dim); }
+  button { background:var(--open); color:#fff; border:0; border-radius:8px; padding:9px 14px;
+           font-weight:600; cursor:pointer; font-size:13px; }
   button.ghost { background:transparent; border:1px solid var(--line); color:var(--ink); }
-  #grid { height: calc(100vh - 300px); min-height:340px; width:100%; }
-  .chip { padding:2px 8px; border-radius:999px; font-size:11px; font-weight:700; letter-spacing:.4px; }
-  .chip.allow { background:rgba(47,191,113,.16); color:var(--allow); }
-  .chip.hold  { background:rgba(224,168,0,.16);  color:var(--hold); }
-  .chip.deny  { background:rgba(229,72,77,.16);   color:var(--deny); }
-  table.fallback { width:100%; border-collapse:collapse; font-size:13px; }
-  table.fallback th { text-align:left; color:var(--dim); font-weight:500; border-bottom:1px solid var(--line);
-                      padding:8px 10px; font-size:11px; text-transform:uppercase; letter-spacing:.7px; }
-  table.fallback td { padding:8px 10px; border-bottom:1px solid #171c27; vertical-align:top; }
-  .mono { font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; color:var(--dim); }
-  .note { color:var(--dim); font-size:12px; margin-top:10px; }
-  .note b { color:var(--ink); font-weight:600; }
-  a { color:var(--accent); }
-  #panel { margin-top:12px; }
-  .verdict { border:1px solid var(--line); border-radius:10px; padding:14px 16px;
-             background:var(--panel); display:none; }
-  .verdict.show { display:block; }
-  .verdict h3 { margin:0 0 8px; font-size:13px; text-transform:uppercase;
-                letter-spacing:.8px; color:var(--dim); font-weight:600; }
-  .verdict .row { display:flex; gap:12px; align-items:baseline; margin:6px 0; }
-  .verdict .tag { font-weight:700; font-size:12px; padding:2px 8px; border-radius:999px; }
-  .verdict .valid { background:rgba(47,191,113,.16); color:var(--allow); }
-  .verdict .invalid { background:rgba(229,72,77,.16); color:var(--deny); }
-  .verdict code { color:var(--ink); font-size:12.5px; }
-  .verdict .muted { color:var(--dim); font-size:12.5px; }
-  .rowlink { color:var(--accent); cursor:pointer; text-decoration:underline; }
-  .chip.auth { background:rgba(91,141,239,.16); color:var(--accent); }
-  .chip.rel  { background:rgba(139,151,173,.16); color:var(--dim); }
-  .card .v.auth { color:var(--accent); } .card .v.rel { color:var(--dim); }
-  .card .sub { color:var(--dim); font-size:11px; margin-top:1px; }
-  .filters { display:flex; gap:6px; align-items:center; }
-  .filters button { background:transparent; border:1px solid var(--line); color:var(--dim);
-                    padding:6px 11px; font-weight:600; font-size:12px; }
-  .filters button.on { background:var(--panel); color:var(--ink); border-color:#3a4152; }
-  #negotiation { margin-top:26px; border-top:1px solid var(--line); padding-top:18px; }
-  #negotiation h2 { font-size:16px; margin:0 0 3px; }
-  .neg-wrap { display:grid; grid-template-columns:1.4fr 1fr; gap:14px; margin-top:14px; }
-  .cardneg { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
-  #neg-chart { width:100%; height:auto; display:block; }
-  #neg-transcript { max-height:318px; overflow:auto; font-size:12.5px; }
-  .neg-line { display:flex; gap:9px; padding:5px 0; border-bottom:1px solid #171c27; }
-  .neg-who { width:46px; flex:0 0 46px; color:var(--dim); font-size:10px;
-             text-transform:uppercase; letter-spacing:.6px; padding-top:2px; }
-  .neg-verdicts { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px; }
-  .neg-verdicts .cardneg h4 { margin:0 0 6px; font-size:12px; text-transform:uppercase;
-                              letter-spacing:.7px; color:var(--dim); }
-  @media (max-width: 820px) { .neg-wrap, .neg-verdicts { grid-template-columns:1fr; } }
+  .row { display:flex; gap:8px; align-items:center; margin-left:auto; }
+  table { width:100%; border-collapse:collapse; font-size:13px; background:var(--panel);
+          border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  th { text-align:left; color:var(--dim); font-weight:500; border-bottom:1px solid var(--line);
+       padding:9px 11px; font-size:11px; text-transform:uppercase; letter-spacing:.7px; }
+  td { padding:9px 11px; border-bottom:1px solid #171c27; vertical-align:middle; }
+  tr.pick { cursor:pointer; } tr.pick:hover td { background:#151a26; }
+  tr.sel td { background:#182031; }
+  .chip { padding:2px 8px; border-radius:999px; font-size:10.5px; font-weight:700; letter-spacing:.4px; }
+  .chip.authorised, .chip.part_captured { background:rgba(91,141,239,.16); color:var(--open); }
+  .chip.captured { background:rgba(47,191,113,.16); color:var(--ok); }
+  .chip.part_released, .chip.voided, .chip.expired { background:rgba(139,151,173,.16); color:var(--dim); }
+  .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; color:var(--dim); }
+  #detail { margin-top:18px; }
+  .timeline { border-left:2px solid var(--line); margin:8px 0 0 6px; padding-left:16px; }
+  .step { position:relative; padding:9px 0; border-bottom:1px solid #171c27; }
+  .step:last-child { border-bottom:0; }
+  .step::before { content:""; position:absolute; left:-23px; top:15px; width:9px; height:9px;
+                  border-radius:50%; background:var(--dim); border:2px solid var(--bg); }
+  .step.ok::before { background:var(--ok); }
+  .step.stop::before { background:var(--warn); }
+  .step .head { display:flex; gap:10px; align-items:baseline; flex-wrap:wrap; }
+  .step .kind { font-weight:600; min-width:96px; }
+  .step .reason { color:var(--ink); }
+  .step .meta { color:var(--dim); font-size:12px; margin-top:3px; }
+  .fail { color:var(--warn); font-size:12.5px; margin-top:4px; }
+  .link { color:var(--open); cursor:pointer; text-decoration:underline; }
+  .verdict { border:1px solid var(--line); border-radius:10px; padding:12px 15px; background:var(--panel); margin-top:12px; }
+  .verdict h3 { margin:0 0 8px; font-size:12px; text-transform:uppercase; letter-spacing:.8px; color:var(--dim); }
+  .verdict .r { display:flex; gap:12px; align-items:baseline; margin:5px 0; }
+  .verdict .t { font-weight:700; font-size:11px; padding:2px 8px; border-radius:999px; }
+  .verdict .valid { background:rgba(47,191,113,.16); color:var(--ok); }
+  .verdict .invalid { background:rgba(229,72,77,.16); color:var(--bad); }
+  .note { color:var(--dim); font-size:12px; margin-top:12px; }
+  .note b { color:var(--ink); }
 </style>
 </head>
 <body>
 <header>
-  <h1>Warden</h1>
-  <span class="tag">settlement &amp; proof for agent-to-agent work</span>
-  <span class="badge sim" id="mode">mode: …</span>
-  <span class="badge" id="judge">judge: …</span>
+  <h1>Grace</h1>
+  <span class="tag">the agent that finishes the payment</span>
+  <span class="badge" id="mode">rail: …</span>
+  <span class="badge" id="signing">signing: …</span>
 </header>
 <main>
   <div class="strip">
-    <div class="card money"><div class="k">In escrow — authorised, not taken</div><div class="v auth" id="m-auth">0.00</div></div>
-    <div class="card money"><div class="k">Paid — captured on proof</div><div class="v allow" id="m-paid">0.00</div></div>
-    <div class="card money"><div class="k">Released — voided</div><div class="v rel" id="m-void">0.00</div></div>
-    <div class="card money"><div class="k">Recovered — stopped, then settled</div><div class="v" id="m-recovered">0.00</div></div>
-    <div class="card"><div class="k">Decisions</div><div class="v" id="n-counts" style="font-size:15px">—</div></div>
-    <div style="display:flex;align-items:center;gap:8px;margin-left:auto">
-      <button id="seed">Run the scenarios</button>
+    <div class="card"><div class="k">Open — committed, not taken</div><div class="v open" id="s-open">0.00</div>
+      <div class="sub" id="s-open-sub">money at risk in the gap</div></div>
+    <div class="card"><div class="k">Captured</div><div class="v ok" id="s-captured">0.00</div>
+      <div class="sub">settled with the payee</div></div>
+    <div class="card"><div class="k">Released</div><div class="v rel" id="s-released">0.00</div>
+      <div class="sub">authorised, then handed back</div></div>
+    <div class="card"><div class="k">Payments</div><div class="v" id="s-count" style="font-size:18px">0</div>
+      <div class="sub">every one receipted</div></div>
+    <div class="row">
+      <button id="seed">Run the five cases</button>
       <button class="ghost" id="tamper">Tamper demo</button>
       <button class="ghost" id="refresh">Refresh</button>
     </div>
   </div>
-  <div class="filters">
-    <button class="on" data-filter="all">All</button>
-    <button data-filter="hold">Held</button>
-    <button data-filter="authorised">In escrow</button>
-    <button data-filter="captured">Paid</button>
-    <button data-filter="voided">Released</button>
-    <span class="note" style="margin:0 0 0 8px">the money has a state of its own, separate from the decision</span>
-  </div>
-  <div id="grid" class="ag-theme-quartz-dark"></div>
+
+  <table>
+    <thead><tr>
+      <th>State</th><th>Payee</th><th>Authorised</th><th>Captured</th><th>Open</th><th>Payment</th>
+    </tr></thead>
+    <tbody id="rows"><tr><td colspan="6" class="mono">nothing yet — press “Run the five cases”.</td></tr></tbody>
+  </table>
+
+  <div id="detail"></div>
   <div id="panel"></div>
-  <section id="negotiation">
-    <h2>Two agents haggle. The ceiling does not move.</h2>
-    <p class="tag" style="margin:0">
-      A supplier has quoted 534.00 for a bulk toner order. Nothing on a shop shelf is negotiable —
-      this is a quote, and quotes are conversations. The buyer opens low, the supplier concedes to its
-      private floor, and the mandate stops the conversation.
-    </p>
-    <div class="neg-wrap" style="display:none" id="neg-body">
-      <div class="cardneg">
-        <svg id="neg-chart" xmlns="http://www.w3.org/2000/svg"></svg>
-      </div>
-      <div class="cardneg"><div id="neg-transcript"></div></div>
-    </div>
-    <div id="neg-verdicts" class="neg-verdicts"></div>
-    <p class="note" id="neg-note"></p>
-  </section>
 
   <p class="note">
-    <b>AG Grid</b> is the ledger, not decoration. Filter <span class="mono">Held</span> to see everything an
-    agent wanted to buy and was stopped from buying, with the smallest change that would have allowed it.
-    Filter <span class="mono">In escrow</span> to see money that is committed and not taken — the state an
-    escrow actually lives in.
+    <b>Open</b> means the money is committed and not taken — the window this product exists for.
+    Click any payment to see every move the agent made on it, including the refusals, each with a
+    signed receipt you can re-verify.
   </p>
 </main>
-<script src="https://cdn.jsdelivr.net/npm/ag-grid-community@32.2.2/dist/ag-grid-community.min.js"></script>
 <script>
-const state = { rows: [], counts: { allow: 0, hold: 0, deny: 0 }, money: [], recovery: null, filter: "all" };
-
-const MONEY = {
-  authorised: ["auth", "IN ESCROW"],
-  captured:   ["allow", "PAID"],
-  voided:     ["rel", "RELEASED"],
-  part_captured: ["hold", "PART CAPTURED"],
-  capture_failed: ["deny", "CAPTURE FAILED"],
-};
-
-function moneyChip(value) {
-  const entry = MONEY[value];
-  if (!entry) return '<span class="mono">—</span>';
-  return `<span class="chip ${entry[0]}">${entry[1]}</span>`;
-}
-
-function visibleRows() {
-  if (state.filter === "all") return state.rows;
-  if (state.filter === "hold") return state.rows.filter(r => r.outcome === "hold");
-  return state.rows.filter(r => r.money_state === state.filter);
-}
+const state = { payments: [], summary: null, selected: null };
 
 async function api(path, options) {
-  const res = await fetch(path, Object.assign({ headers: { "Content-Type": "application/json" } }, options));
-  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.status);
-  return res.json();
+  const response = await fetch(path, Object.assign({ headers: { "Content-Type": "application/json" } }, options));
+  if (!response.ok) throw new Error((await response.json().catch(() => ({}))).detail || response.status);
+  return response.json();
 }
+
+const money = value => `${(value || 0).toFixed(2)}`;
 
 function chip(value) {
-  return `<span class="chip ${value}">${value.toUpperCase()}</span>`;
+  return `<span class="chip ${value}">${String(value).replace("_", " ").toUpperCase()}</span>`;
 }
 
-function renderCounts() {
-  const c = state.counts;
-  document.getElementById("n-counts").textContent =
-    `${c.allow ?? 0} allowed · ${c.hold ?? 0} held · ${c.deny ?? 0} denied`;
+function renderSummary() {
+  const s = state.summary || {};
+  document.getElementById("s-open").textContent = money(s.open);
+  document.getElementById("s-captured").textContent = money(s.captured);
+  document.getElementById("s-released").textContent = money(s.released);
+  document.getElementById("s-count").textContent = s.payments || 0;
 }
 
-function renderMoney() {
-  const totals = { authorised: 0, captured: 0, voided: 0 };
-  const currency = state.money[0]?.currency || "USD";
-  for (const entry of state.money) totals[entry.money_state] = entry.total;
-  document.getElementById("m-auth").textContent = `${totals.authorised.toFixed(2)} ${currency}`;
-  document.getElementById("m-paid").textContent = `${totals.captured.toFixed(2)} ${currency}`;
-  document.getElementById("m-void").textContent = `${totals.voided.toFixed(2)} ${currency}`;
-
-  const recovery = state.recovery || {};
-  const recovered = document.getElementById("m-recovered");
-  if (recovered) {
-    recovered.textContent = `${(recovery.recovered_volume || 0).toFixed(2)} ${recovery.currency || currency}`;
-    recovered.insertAdjacentHTML("afterend",
-      `<div class="sub">${recovery.recovered_mandates || 0} of ${recovery.blocked_mandates || 0} blocked mandates came back</div>`);
-  }
-}
-
-function fallbackTable() {
-  const rows = visibleRows().map(r => `
-    <tr>
-      <td>${chip(r.outcome)}</td>
-      <td>${moneyChip(r.money_state)}</td>
-      <td>${r.vendor || "—"}</td>
-      <td>${r.amount.toFixed(2)} ${r.currency}</td>
-      <td>${(r.reason || "").replace(/</g, "&lt;")}</td>
-      <td class="mono">${r.id} <span class="rowlink" onclick="verifyRow('${r.id}')">verify</span></td>
+function renderRows() {
+  const rows = state.payments.map(p => `
+    <tr class="pick ${p.id === state.selected ? "sel" : ""}" onclick="selectPayment('${p.id}')">
+      <td>${chip(p.state)}</td>
+      <td>${p.payee}</td>
+      <td class="mono">${money(p.amount)} ${p.currency}</td>
+      <td class="mono">${money(p.captured)}</td>
+      <td class="mono">${p.state === "authorised" || p.state === "part_captured" ? money(p.remaining) : "—"}</td>
+      <td class="mono">${p.id}</td>
     </tr>`).join("");
-  document.getElementById("grid").innerHTML = `
-    <table class="fallback">
-      <thead><tr><th>Decision</th><th>Money</th><th>Counterparty</th><th>Amount</th><th>Decided by</th><th>Receipt</th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="6" style="color:#8b97ad">No decisions yet — press “Run the scenarios”.</td></tr>'}</tbody>
-    </table>
-    <p class="note">AG Grid could not load (offline or blocked), so this is the plain renderer.
-    The same data is served by <span class="mono">GET /api/ledger</span>.</p>`;
+  document.getElementById("rows").innerHTML =
+    rows || '<tr><td colspan="6" class="mono">nothing yet — press “Run the five cases”.</td></tr>';
 }
 
-const panel = document.getElementById("panel");
+async function selectPayment(paymentId) {
+  state.selected = paymentId;
+  renderRows();
+  const detail = await api(`/api/payments/${paymentId}`);
+  const steps = detail.transitions.map(t => {
+    const railStatus = (t.allowed && t.checks.length) ? "" : "";
+    const failed = (t.checks || []).filter(c => !c.passed);
+    return `
+      <div class="step ${t.allowed ? "ok" : "stop"}">
+        <div class="head">
+          <span class="kind">${t.kind}</span>
+          <span class="mono">${t.amount != null ? money(t.amount) : "—"}</span>
+          <span class="mono">${t.actor}</span>
+          <span class="reason">${t.reason}</span>
+        </div>
+        ${failed.map(c => `<div class="fail">rule ${c.rule_id}: ${c.reason}</div>`).join("")}
+        ${t.counterfactual ? `<div class="fail">would need: ${t.counterfactual}</div>` : ""}
+        <div class="meta">
+          ${t.at} · <span class="mono">${t.id}</span>
+          <span class="link" onclick="verify('${t.id}')">verify</span>
+        </div>
+      </div>`;
+  }).join("");
 
-function renderPanel(title, rows, note) {
-  panel.innerHTML = `
-    <div class="verdict show">
-      <h3>${title}</h3>
-      ${rows.map(r => `
-        <div class="row">
-          <span class="tag ${r.ok ? "valid" : "invalid"}">${r.ok ? "VALID" : "INVALID"}</span>
-          <code>${r.label}</code>
-          <span class="muted">${r.message}</span>
-        </div>`).join("")}
-      ${note ? `<p class="muted" style="margin:10px 0 0">${note}</p>` : ""}
-    </div>`;
+  document.getElementById("detail").innerHTML = `
+    <h2 style="font-size:15px;margin:0 0 2px">
+      ${detail.payment.payee.name} — ${money(detail.payment.amount)} ${detail.payment.currency}
+      ${chip(detail.payment.state)}
+    </h2>
+    <div class="note" style="margin-top:0">
+      authority <span class="mono">${detail.payment.authority_id}</span> ·
+      ${detail.authority.purpose} · expires ${detail.payment.expires_at}
+    </div>
+    <div class="timeline">${steps}</div>`;
+  document.getElementById("panel").innerHTML = "";
 }
 
-async function verifyRow(id) {
-  const result = await api(`/api/decisions/${id}/verify`);
-  renderPanel(`Receipt ${id}`, [
-    { ok: result.ok, label: id, message: result.message },
-  ], "Click any row to re-verify its signature.");
+async function verify(transitionId) {
+  const result = await api(`/api/transitions/${transitionId}/verify`);
+  renderPanel(`Receipt ${transitionId}`, [{ ok: result.ok, label: "as signed", message: result.message }],
+    "Click any transition to re-verify its signature.");
 }
 
 async function tamperDemo() {
-  const held = state.rows.find(r => r.outcome !== "allow") || state.rows[0];
-  if (!held) { alert("Run the scenarios first."); return; }
-  const result = await api(`/api/decisions/${held.id}/tamper-demo`, { method: "POST" });
+  const paymentId = state.selected || (state.payments[0] && state.payments[0].id);
+  if (!paymentId) { alert("Run the cases first."); return; }
+  const detail = await api(`/api/payments/${paymentId}`);
+  if (!detail.transitions.length) { alert("No transitions on that payment."); return; }
+  const transitionId = detail.transitions[detail.transitions.length - 1].id;
+  const result = await api(`/api/transitions/${transitionId}/tamper-demo`, { method: "POST" });
   renderPanel(
     `Same receipt, one field changed: ${result.changed_field} ${result.changed_from} → ${result.changed_to}`,
     [
@@ -242,171 +198,41 @@ async function tamperDemo() {
   );
 }
 
-let gridApi = null;
-function renderGrid() {
-  if (!window.agGrid) { fallbackTable(); return; }
-  if (!gridApi) {
-    const columnDefs = [
-      { field: "outcome", headerName: "Decision", width: 120,
-        cellRenderer: p => chip(p.value) },
-      { field: "money_state", headerName: "Money", width: 130,
-        cellRenderer: p => moneyChip(p.value) },
-      { field: "vendor", headerName: "Counterparty", flex: 1, minWidth: 150 },
-      { field: "amount", headerName: "Amount", width: 130,
-        valueFormatter: p => `${p.value.toFixed(2)} ${p.data.currency}` },
-      { field: "intent_score", headerName: "Intent match", width: 130,
-        valueFormatter: p => p.value?.toFixed(2),
-        cellStyle: p => ({ color: p.value < 0.55 ? "#e0a800" : "#8b97ad" }) },
-      { field: "reason", headerName: "Decided by", flex: 2, minWidth: 280 },
-      { field: "mode", headerName: "Rail", width: 110 },
-      { field: "id", headerName: "Receipt", width: 170, cellClass: "mono" },
-    ];
-    gridApi = agGrid.createGrid(document.getElementById("grid"), {
-      columnDefs, rowData: visibleRows(),
-      defaultColDef: { sortable: true, resizable: true, filter: true },
-      quickFilterText: "",
-      rowHeight: 40, headerHeight: 38,
-      getRowId: p => p.data.id,
-      onRowClicked: e => verifyRow(e.data.id),
-    });
-  } else {
-    gridApi.setGridOption("rowData", visibleRows());
-  }
-}
-
-async function refresh() {
-  const [data, money, recovery] = await Promise.all([
-    api("/api/ledger"), api("/api/money"), api("/api/recovery"),
-  ]);
-  state.rows = data.rows; state.counts = data.counts;
-  state.money = money.summary; state.recovery = recovery;
-  renderCounts(); renderMoney(); renderGrid();
-}
-
-function drawNegotiation(data) {
-  const svg = document.getElementById("neg-chart");
-  const W = 720, H = 320, L = 74, R = 18, T = 22, B = 44;
-  const rounds = data.rounds;
-  const ceiling = data.mandate.ceiling, floor = data.seller.floor;
-  const values = rounds.map(r => r.price).concat([ceiling, floor]);
-  const lo = Math.min(...values) - 14, hi = Math.max(...values) + 14;
-  const x = i => L + (rounds.length <= 1 ? (W - L - R) / 2 : (i * (W - L - R)) / (rounds.length - 1));
-  const y = p => T + ((hi - p) / (hi - lo)) * (H - T - B);
-
-  // The gap between the seller's floor and the mandate's ceiling is the whole story.
-  let out = `<rect x="${L}" y="${y(floor)}" width="${W - L - R}" height="${y(ceiling) - y(floor)}"
-                  fill="#e5484d" opacity="0.10"/>`;
-  out += `<text x="${W - R - 6}" y="${(y(floor) + y(ceiling)) / 2 + 3}" fill="#e5484d" font-size="10"
-                  text-anchor="end" opacity="0.95">no agreement possible in this gap</text>`;
-
-  const guides = [
-    { value: ceiling, label: `mandate ceiling ${ceiling.toFixed(2)}`, color: "#e5484d" },
-    { value: floor, label: `seller's private floor ${floor.toFixed(2)}`, color: "#8b97ad" },
-  ];
-  for (const g of guides) {
-    out += `<line x1="${L}" y1="${y(g.value)}" x2="${W - R}" y2="${y(g.value)}"
-                  stroke="${g.color}" stroke-width="1" stroke-dasharray="5 4"/>`;
-    out += `<text x="${L + 5}" y="${y(g.value) - 6}" fill="${g.color}" font-size="10.5">${g.label}</text>`;
-  }
-
-  for (const [speaker, colour] of [["seller", "#e0a800"], ["buyer", "#5b8def"]]) {
-    const points = rounds
-      .map((r, i) => (r.speaker === speaker ? [x(i), y(r.price)] : null))
-      .filter(Boolean);
-    if (points.length > 1) {
-      out += `<polyline points="${points.map(p => p.join(",")).join(" ")}" fill="none"
-                        stroke="${colour}" stroke-width="2" opacity="0.5"/>`;
-    }
-  }
-
-  rounds.forEach((r, i) => {
-    const colour = r.speaker === "seller" ? "#e0a800" : "#5b8def";
-    out += `<circle cx="${x(i)}" cy="${y(r.price)}" r="5" fill="${colour}"/>`;
-    out += `<text x="${x(i)}" y="${y(r.price) - 11}" fill="#e8edf7" font-size="10.5"
-                   text-anchor="middle">${r.price.toFixed(2)}</text>`;
-    out += `<text x="${x(i)}" y="${H - 24}" fill="#8b97ad" font-size="9.5"
-                   text-anchor="middle">${r.speaker}</text>`;
-  });
-
-  const last = rounds[rounds.length - 1];
-  out += `<text x="${x(rounds.length - 1)}" y="${H - 8}" fill="#e5484d" font-size="10"
-                 text-anchor="middle">walked away</text>`;
-
-  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
-  svg.innerHTML = out;
-  return last;
-}
-
-function verdictCard(title, decision, subtitle) {
-  const ok = decision.outcome === "allow";
-  const reasons = (decision.reasons || []).map(r => `<div class="muted">${r}</div>`).join("");
-  return `
-    <div class="cardneg">
-      <h4>${title}</h4>
-      <div class="row" style="display:flex;gap:10px;align-items:baseline">
-        <span class="chip ${ok ? "allow" : "hold"}">${decision.outcome.toUpperCase()}</span>
-        <code>${decision.amount.toFixed(2)} USD</code>
-        <span class="muted">${subtitle}</span>
-      </div>
-      ${reasons}
-      ${decision.counterfactual ? `<div class="muted" style="margin-top:6px">${decision.counterfactual}</div>` : ""}
+function renderPanel(title, rows, note) {
+  document.getElementById("panel").innerHTML = `
+    <div class="verdict">
+      <h3>${title}</h3>
+      ${rows.map(r => `<div class="r">
+        <span class="t ${r.ok ? "valid" : "invalid"}">${r.ok ? "VALID" : "INVALID"}</span>
+        <code>${r.label}</code><span class="note" style="margin:0">${r.message}</span>
+      </div>`).join("")}
+      ${note ? `<p class="note">${note}</p>` : ""}
     </div>`;
 }
 
-async function runNegotiation() {
-  const data = await api("/api/negotiation");
-  document.getElementById("neg-body").style.display = "grid";
-
-  drawNegotiation(data);
-
-  document.getElementById("neg-transcript").innerHTML = data.rounds.map(r => `
-    <div class="neg-line">
-      <div class="neg-who">${r.speaker}</div>
-      <div><b>${r.price.toFixed(2)}</b> <span class="mono">${r.message}</span></div>
-    </div>`).join("");
-
-  document.getElementById("neg-verdicts").innerHTML =
-    verdictCard(`If the buyer had simply conceded`, data.over_ceiling, "listed price, 6 units") +
-    verdictCard(`What it did instead`, data.deal, "5 units, after walking away");
-
-  const reason = data.walk_away_reason || "the buyer agreed inside its ceiling";
-  document.getElementById("neg-note").innerHTML =
-    `<b>${reason}.</b> The seller never moves below ${data.seller.floor.toFixed(2)}; the mandate never
-     moves above ${data.mandate.ceiling.toFixed(2)}. The negotiation is the model's — the ceiling is not.`;
-}
-
-function wireFilters() {
-  document.querySelectorAll(".filters button").forEach(button => {
-    button.onclick = () => {
-      document.querySelectorAll(".filters button").forEach(b => b.classList.remove("on"));
-      button.classList.add("on");
-      state.filter = button.dataset.filter;
-      renderGrid();
-    };
-  });
+async function refresh() {
+  const [payments, summary] = await Promise.all([api("/api/payments"), api("/api/summary")]);
+  state.payments = payments.payments;
+  state.summary = summary;
+  renderSummary();
+  renderRows();
 }
 
 async function boot() {
   try {
     const health = await api("/api/health");
-    document.getElementById("mode").textContent = `paypal: ${health.paypal_mode}`;
-    document.getElementById("judge").textContent = `judge: ${health.judge}`;
-  } catch (e) {
-    document.getElementById("mode").textContent = "API not running";
-  }
-  try { await refresh(); } catch (e) { fallbackTable(); }
+    document.getElementById("mode").textContent = `rail: ${health.paypal_mode}`;
+    document.getElementById("signing").textContent = `signing: ${health.signing}`;
+  } catch (error) { /* offline preview: the table below still renders */ }
+  await refresh();
 }
 
-document.getElementById("seed").onclick = async () => {
-  try { await api("/api/demo/seed", { method: "POST" }); await refresh(); }
-  catch (e) { alert("Seed failed: " + e.message); }
-};
 document.getElementById("refresh").onclick = () => refresh();
 document.getElementById("tamper").onclick = () => tamperDemo();
-wireFilters();
-runNegotiation().catch(error => {
-  document.getElementById("neg-note").textContent = `negotiation view unavailable: ${error.message}`;
-});
+document.getElementById("seed").onclick = async () => {
+  await api("/api/demo/seed", { method: "POST" });
+  await refresh();
+};
 boot();
 </script>
 </body>

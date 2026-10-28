@@ -15,14 +15,14 @@ import hmac
 import os
 from typing import Any
 
-from warden.models import canonical_json
+from grace.models import canonical_json
 
 DEFAULT_KEY = "dev-only-signing-key-change-me"
 ALGORITHM = "HMAC-SHA256"
 
 
 def _key() -> bytes:
-    return os.environ.get("WARDEN_SIGNING_KEY", DEFAULT_KEY).encode("utf-8")
+    return os.environ.get("GRACE_SIGNING_KEY", DEFAULT_KEY).encode("utf-8")
 
 
 def sign(payload: dict[str, Any], *, key_id: str | None = None) -> dict[str, Any]:
@@ -31,7 +31,7 @@ def sign(payload: dict[str, Any], *, key_id: str | None = None) -> dict[str, Any
     signature = hmac.new(_key(), body, hashlib.sha256).hexdigest()
     return {
         "alg": ALGORITHM,
-        "key_id": key_id or os.environ.get("WARDEN_SIGNING_KEY_ID", "local-dev"),
+        "key_id": key_id or os.environ.get("GRACE_SIGNING_KEY_ID", "local-dev"),
         "payload": payload,
         "sig": signature,
     }
