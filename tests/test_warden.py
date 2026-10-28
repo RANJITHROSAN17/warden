@@ -497,3 +497,73 @@ def test_the_tamper_demo_shows_both_verdicts_and_stores_nothing(tmp_path) -> Non
     assert result["genuine"]["ok"] is True
     assert result["tampered"]["ok"] is False
     assert before["sig"] == after["sig"], "the stored receipt must not be mutated by the demo"
+
+
+# ── escrow: agent hires agent ──────────────────────────────────────────────────────────────
+
+
+def test_a_contract_line_cannot_be_paid_without_an_artefact() -> None:
+    """The hold before delivery is the escrow: committed, not paid."""
+    gateway = new_gateway()
+    mandate = standard_mandate(gateway, ceiling=250.0, categories=("contract_work",))
+    vendor = Vendor(id="V-BRIEF", name="Briefwork", age_days=400, country="GB", approved=True)
+    decision, _ = gateway.attempt(
+        mandate,
+        vendor,
+        [
+            LineItem(
+                sku="D1",
+                description="competitor pricing brief (contract work)",
+                category="contract_work",
+                qty=1,
+                unit_price=234.0,
+                evidence="",
+            )
+        ],
+        "contract work: the competitor pricing brief across twelve markets",
+    )
+    assert decision.outcome is Outcome.HOLD
+    assert "delivery.evidence" in {rule.rule_id for rule in decision.rules if not rule.passed}
+
+
+def test_the_verifier_reads_whole_words_not_substrings() -> None:
+    """A stub mentioning 'brief' must not satisfy a requirement for the code BR."""
+    from warden.escrow import Acceptance, Artefact, check
+
+    acceptance = Acceptance(covers=("BR",), min_chars=0, requires_source=False)
+    stub = Artefact("brief.md", "Pricing brief. Numbers are similar.")
+    real = Artefact("brief.md", "BR  Sao Paulo   median 42 BRL")
+    assert check(acceptance, stub).passed is False
+    assert check(acceptance, real).passed is True
+
+
+def test_an_authorised_payment_can_be_voided_when_the_work_fails() -> None:
+    """The whole reason for authorize-then-capture: the money never moved."""
+    from warden.escrow import Acceptance, Artefact, check
+
+    gateway = new_gateway()
+    mandate = standard_mandate(gateway, ceiling=250.0, categories=("contract_work",))
+    vendor = Vendor(id="V-BRIEF", name="Briefwork", age_days=400, country="GB", approved=True)
+    acceptance = Acceptance(covers=("JP", "DE", "BR"), min_chars=400)
+
+    decision, decision_id = gateway.attempt(
+        mandate,
+        vendor,
+        [
+            LineItem(
+                sku="D1",
+                description="competitor pricing brief (contract work)",
+                category="contract_work",
+                qty=1,
+                unit_price=234.0,
+                evidence="16abc831ed50fa9f",
+            )
+        ],
+        "contract work: the competitor pricing brief across twelve markets",
+    )
+    assert decision.outcome is Outcome.ALLOW
+
+    stub = Artefact("brief.md", "Pricing brief. Twelve markets looked at.")
+    assert check(acceptance, stub).passed is False
+    released = gateway.void(decision_id)
+    assert released.get("status") in {"VOIDED", "simulated"}

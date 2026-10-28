@@ -44,6 +44,27 @@ Warden adds the two dimensions a tool flag cannot express:
 It is complementary to the Toolkit, not a replacement: put Warden in front of the PayPal tools and
 they inherit authority and evidence.
 
+## Agent hires agent, and the money waits
+
+```bash
+python -m warden.demo --story market
+```
+
+A buyer agent shortlists two sellers, negotiates 260 → 234, and tries to settle. It is **held**:
+
+```
+HOLD   1 before delivery            234.00 USD
+       because     delivery.evidence: billed without a delivered artefact: D1
+       this hold is the escrow: the money is committed, and it is not paid
+```
+
+The work arrives, a verifier reads it against criteria written down *before* the job started, and
+the same engine allows it — authorised, then captured. When the artefact does not survive that
+read, the authorisation is **voided** and the money never moves.
+
+PayPal's `AUTHORIZE` / `CAPTURE` / `VOID` is the escrow primitive. Warden decides when to pull each
+lever.
+
 ## See it prove itself
 
 Open the ledger, press **Tamper demo**. Two verdicts on the same receipt, one field apart:

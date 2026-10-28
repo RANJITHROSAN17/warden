@@ -15,6 +15,7 @@ import os
 import sys
 
 from warden.catalog import item, vendor
+from warden.escrow import Acceptance, Artefact, check
 from warden.gateway import Gateway
 from warden.ledger import Ledger
 from warden.models import Decision, LineItem, Outcome, Vendor
@@ -459,6 +460,163 @@ def run_heal_story(mode: str = "auto") -> int:
     return 0
 
 
+BRIEF = """Competitor pricing brief, 12 markets.
+Prepared for ProcureBot.
+
+JP  Tokyo        median 1,480 JPY   source: https://example.jp/catalogue
+DE  Berlin       median   18 EUR   source: https://example.de/preise
+BR  Sao Paulo    median   42 BRL   source: https://example.br/tabela
+US  New York     median   24 USD   source: https://example.com/pricing
+GB  London       median   19 GBP   source: https://example.co.uk/list
+
+Pricing has moved up in three of the five markets sampled, and the spread between the
+cheapest and dearest market widened by roughly nine percent quarter on quarter. The largest
+move is in Brazil, where a currency shift accounts for most of the change. The rest of the
+detail sits in the attached workbook.
+"""
+
+STUB = "Pricing brief. Twelve markets looked at. Numbers are roughly similar to last quarter."
+
+
+def _checks(acceptance, artefact, glyph_ok: str = "ok  ", glyph_bad: str = "FAIL") -> tuple:
+    verdict = check(acceptance, artefact)
+    digest = artefact.sha256[:16]
+    print(f"seller hands over   {artefact.name}   {artefact.chars} chars   sha256 {digest}")
+    print(f"acceptance          {acceptance.describe()}")
+    for result in verdict.checks:
+        mark = glyph_ok if result.passed else glyph_bad
+        print(f"   {mark}  {result.criterion:<28} {result.detail}")
+    return verdict
+
+
+def run_market_story(mode: str = "auto") -> int:
+    """Two agents, one job, money held until the work is proved.
+
+    The same engine as the purchasing story, pointed at agent-to-agent commerce. A buyer agent
+    hires a seller agent and agrees a price. The money is committed but not taken, because a
+    contract_work line cannot pass without an artefact - the hold *is* the escrow.
+
+    Then the seller hands over the work, a verifier reads it against criteria written down before
+    the job started, and the authorisation becomes a capture. When the work does not survive that
+    read, the authorisation becomes a void instead, and the money never moved.
+
+    PayPal's authorize/capture/void is the escrow primitive. Warden decides when to pull each lever.
+    """
+    gateway = Gateway(ledger=Ledger(":memory:"), rail=select_rail(mode))
+    seller = Vendor(
+        id="V-BRIEF", name="Briefwork Research", age_days=410, country="GB", approved=True
+    )
+    mandate = gateway.issue_mandate(
+        purpose="buy a competitor pricing brief for Q4 planning",
+        ceiling=250.0,
+        categories=("contract_work",),
+        min_vendor_age_days=30,
+        intent_threshold=0.45,
+        allowed_vendors=(seller.id,),
+    )
+    acceptance = Acceptance(covers=("JP", "DE", "BR"), min_chars=400)
+    intent = "contract work: the competitor pricing brief across twelve markets"
+
+    def line_for(price: float, evidence: str, description: str) -> LineItem:
+        return Deliverable("D1", description, price, evidence, True).as_line_item()
+
+    print()
+    print("WARDEN  -  agent hires agent. The money is held until the work is proved.")
+    print(RULE)
+    print(f"mode      {gateway.rail.mode}")
+    print(f"buyer     {mandate.id}   ceiling {mandate.ceiling:.2f} USD   scope contract_work")
+    print(RULE)
+    print()
+
+    print("bids")
+    print("   V-BRIEF      260.00 USD   competitor pricing brief, 48h")
+    print("   V-RESEARCH   340.00 USD   same scope, slower")
+    print()
+
+    negotiation = negotiate(
+        mandate, "competitor pricing brief", Seller(260.0, 230.0, firmness=0.35), max_rounds=4
+    )
+    for line in negotiation.transcript:
+        print(f"   {line}")
+    price = negotiation.agreed_price or negotiation.rounds[-1].price
+    print()
+
+    # ── 1. agreed, but the work has not arrived ─────────────────────────────────────────────
+    print("1  agreed. The buyer tries to settle immediately.")
+    decision, decision_id = gateway.attempt(
+        mandate, seller, [line_for(price, "", "competitor pricing brief (contract work)")], intent
+    )
+    print(_line(decision, "1 before delivery"))
+    for reason in decision.reasons:
+        print(f"       because     {reason}")
+    print(f"       would need  {decision.counterfactual}")
+    print(f"       receipt     {decision_id}")
+    print("       this hold is the escrow: the money is committed, and it is not paid")
+    print()
+
+    # ── 2. the work arrives and survives the read ───────────────────────────────────────────
+    print("2  the work arrives")
+    good = Artefact("pricing-brief.md", BRIEF)
+    verdict = _checks(acceptance, good)
+    print()
+    if not verdict.passed:
+        raise SystemExit("the good artefact failed verification - the demo inputs are wrong")
+
+    decision2, decision2_id = gateway.attempt(
+        mandate,
+        seller,
+        [line_for(price, good.sha256[:16], "competitor pricing brief (contract work)")],
+        intent,
+    )
+    print(_line(decision2, "2 artefact verified"))
+    print(f"       order       {decision2.paypal.get('order_id')}")
+    print(
+        f"       held in     {decision2.paypal.get('authorization_id')}   authorised, not captured"
+    )
+    print(f"       receipt     {decision2_id}")
+    if decision2.outcome is Outcome.ALLOW:
+        captured = gateway.capture(decision2_id)
+        print(f"capture             {captured.get('status', 'COMPLETED')}   {price:.2f} USD paid")
+        print(f"                    artefact sha256 {good.sha256[:16]} recorded in the receipt")
+    print()
+
+    # ── 3. the claim that does not survive the read ─────────────────────────────────────────
+    print(RULE)
+    print("the claim that does not survive the read")
+    print(RULE)
+    print()
+    poor = Artefact("pricing-brief.md", STUB)
+    print("seller claims complete:")
+    print(f'   "{STUB}"')
+    print()
+
+    decision3, decision3_id = gateway.attempt(
+        mandate,
+        seller,
+        [line_for(price, poor.sha256[:16], "competitor pricing brief (contract work)")],
+        intent,
+    )
+    print(_line(decision3, "3 on the claim alone"))
+    print("       the guard sees an artefact reference and lets the claim through -")
+    print("       it can check that evidence exists, not whether it is any good")
+    print(
+        f"       held in     {decision3.paypal.get('authorization_id')}   authorised, nothing taken"
+    )
+    print()
+    verdict3 = _checks(acceptance, poor)
+    print()
+    if not verdict3.passed:
+        released = gateway.void(decision3_id)
+        print(f"void                {released.get('status', 'VOIDED')}   money never moved")
+        print("                    seller asked to redo; the buyer keeps its money")
+    print()
+
+    print("The authorisation was the escrow. The capture was the release. The void was the refund.")
+    print("No agent on either side could move the money on its own say-so.")
+    print()
+    return 0
+
+
 def run_injection_story(mode: str = "auto") -> int:
     """The agent has been talked into it. The guard does not care what the agent believes.
 
@@ -527,7 +685,7 @@ def _main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--story",
-        choices=["purchase", "payout", "negotiate", "heal", "inject"],
+        choices=["purchase", "payout", "negotiate", "heal", "inject", "market"],
         default="purchase",
         help=(
             "purchase: agent buying goods · payout: paying a contractor · "
@@ -543,6 +701,8 @@ def _main(argv: list[str] | None = None) -> int:
         return run_heal_story(args.rail)
     if args.story == "inject":
         return run_injection_story(args.rail)
+    if args.story == "market":
+        return run_market_story(args.rail)
     return run(args.rail)
 
 
