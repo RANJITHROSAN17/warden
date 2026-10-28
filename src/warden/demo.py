@@ -9,13 +9,16 @@ then one is tampered with to show the check fails.
 
 from __future__ import annotations
 
+import argparse
 import json
+import os
 import sys
 
 from warden.catalog import item, vendor
 from warden.gateway import Gateway
 from warden.ledger import Ledger
 from warden.models import Decision, Outcome
+from warden.paypal import PayPalError, SandboxPayPal, SimulatedPayPal
 
 RULE = "-" * 78
 
@@ -28,8 +31,27 @@ def _line(decision: Decision, label: str) -> str:
     )
 
 
-def run() -> int:
-    gateway = Gateway(ledger=Ledger(":memory:"))
+def select_rail(mode: str):
+    """Choose the payment rail, and never fall back silently.
+
+    Silently degrading from a real sandbox call to a simulated one would be the exact failure
+    this project exists to catch, so asking for `sandbox` without credentials is a hard error
+    rather than a quiet substitution.
+    """
+    if mode == "sandbox":
+        try:
+            return SandboxPayPal()
+        except PayPalError as exc:
+            raise SystemExit(f"cannot run the sandbox rail: {exc}") from exc
+    if mode == "simulated":
+        return SimulatedPayPal()
+    from warden.paypal import make_rail
+
+    return make_rail()
+
+
+def run(mode: str = "auto") -> int:
+    gateway = Gateway(ledger=Ledger(":memory:"), rail=select_rail(mode))
     mandate = gateway.issue_mandate(
         purpose="Q4 office restock",
         ceiling=500.0,
@@ -42,7 +64,12 @@ def run() -> int:
     print()
     print("WARDEN  -  spend authority for AI agents")
     print(RULE)
-    print(f"mode      {gateway.rail.mode}   (no PayPal credentials → simulated rail)")
+    rail_note = (
+        "real PayPal sandbox calls"
+        if gateway.rail.mode == "sandbox"
+        else "labelled stand-in; set PayPal sandbox credentials for real calls"
+    )
+    print(f"mode      {gateway.rail.mode}   ({rail_note})")
     print(f"mandate   {mandate.id}  {mandate.purpose}")
     print(
         f"ceiling   {mandate.ceiling:.2f} {mandate.currency}   "
@@ -121,6 +148,22 @@ def run() -> int:
         grant=grant,
     )
 
+    # 6. Authorised, then the authority is withdrawn before the money is taken.
+    live_decision, live_id = gateway.attempt(
+        mandate,
+        vendor("V-ACME"),
+        [item("SKU-PAPER", 4)],
+        "restock printer paper for the office",
+    )
+    print(_line(live_decision, "6 authorised, then voided"))
+    auth_id = live_decision.paypal.get("authorization_id")
+    print(f"       authorised  {auth_id}   money not taken yet")
+    voided = gateway.void(live_id)
+    print(f"       voided      {voided.get('voided')}   ({voided.get('mode')})")
+    print("       because     the mandate was revoked after authorisation; the authorisation")
+    print("                   window is what makes that possible without a refund")
+    print()
+
     print(RULE)
     counts = gateway.ledger.counts()
     print(f"allowed {counts['allow']}   held {counts['hold']}   denied {counts['deny']}")
@@ -146,5 +189,17 @@ def run() -> int:
     return 0
 
 
+def _main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Five scenarios, decided by the real engine.")
+    parser.add_argument(
+        "--rail",
+        choices=["auto", "sandbox", "simulated"],
+        default=os.environ.get("WARDEN_RAIL", "auto"),
+        help="auto uses sandbox credentials when present, otherwise the labelled stand-in",
+    )
+    args = parser.parse_args(argv)
+    return run(args.rail)
+
+
 if __name__ == "__main__":
-    sys.exit(run())
+    sys.exit(_main())

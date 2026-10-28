@@ -51,7 +51,9 @@ class Gateway:
         self.rail = rail or make_rail()
         self.judge = judge or default_judge()
         self._grants: dict[str, Grant] = {}
-        self._authorizations: dict[str, str] = {}
+        # decision id -> (attempt id, authorization id). One map, so capture and void cannot
+        # disagree about which authorization belongs to which decision.
+        self._authorizations: dict[str, tuple[str, str]] = {}
 
     # ── authority ───────────────────────────────────────────────────────────────────────────
     def issue_mandate(
@@ -147,13 +149,17 @@ class Gateway:
             )
             paypal = {**paypal, **order, **authorization}
             if authorization.get("authorization_id"):
-                self._authorizations[attempt.id] = str(authorization["authorization_id"])
+                self._authorizations["__pending__" + attempt.id] = (
+                    attempt.id,
+                    str(authorization["authorization_id"]),
+                )
 
         receipt = self._sign(decision, mandate, attempt, paypal)
         decision = Decision(**{**decision.__dict__, "paypal": paypal, "receipt": receipt})
         decision_id = self.ledger.add_decision(decision, receipt)
-        self._receipt_ids = getattr(self, "_receipt_ids", {})
-        self._receipt_ids[decision_id] = attempt.id
+        pending = self._authorizations.pop("__pending__" + attempt.id, None)
+        if pending is not None:
+            self._authorizations[decision_id] = pending
         return decision, decision_id
 
     def _sign(
@@ -184,16 +190,21 @@ class Gateway:
         return receipts.sign(payload)
 
     # ── after the fact ──────────────────────────────────────────────────────────────────────
+    def authorization_for(self, decision_id: str) -> str:
+        entry = self._authorizations.get(decision_id)
+        if entry is None:
+            raise KeyError("this decision has no authorization - it was held, denied, or unset")
+        return entry[1]
+
     def capture(self, decision_id: str) -> dict:
-        attempt_id = getattr(self, "_receipt_ids", {}).get(decision_id)
-        authorization_id = self._authorizations.get(attempt_id or "")
-        if not authorization_id:
-            raise KeyError("this decision has no authorization to capture")
-        return self.rail.capture(authorization_id)
+        """Take the money. Returns the capture record."""
+        return self.rail.capture(self.authorization_for(decision_id))
 
     def void(self, decision_id: str) -> dict:
-        attempt_id = getattr(self, "_receipt_ids", {}).get(decision_id)
-        authorization_id = self._authorizations.get(attempt_id or "")
-        if not authorization_id:
-            raise KeyError("this decision has no authorization to void")
-        return self.rail.void(authorization_id)
+        """Release the authorization without taking the money.
+
+        This is the reason the design uses `intent=AUTHORIZE` rather than a direct capture: after
+        the agent is authorised there is still a window in which a mandate can be revoked, and the
+        money never leaves. A capture-first flow cannot do this.
+        """
+        return self.rail.void(self.authorization_for(decision_id))

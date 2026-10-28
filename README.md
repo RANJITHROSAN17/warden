@@ -8,6 +8,9 @@ Spend authority and proof receipts for AI agents that pay — built on the PayPa
 
 `PayPal Orders API` · `Authorize → Capture` · `AG Grid` · `MIT`
 
+<sub>Independent entry to the PayPal AI Hackathon. Not affiliated with or endorsed by PayPal.
+Sandbox only — no real money moves anywhere in this repository.</sub>
+
 </div>
 
 ---
@@ -127,39 +130,45 @@ Real output from that command:
 ```
 WARDEN  -  spend authority for AI agents
 ------------------------------------------------------------------------------
-mode      simulated   (no PayPal credentials → simulated rail)
-mandate   mnd_3575db9068  Q4 office restock
+mode      simulated   (labelled stand-in; set PayPal sandbox credentials for real calls)
+mandate   mnd_3aeaf4004e  Q4 office restock
 ceiling   500.00 USD   categories ['office_supplies']   vendor age ≥ 30d
 judge     lexical-overlap
 ------------------------------------------------------------------------------
 
 ALLOW  1 restock paper               56.00 USD  intent 0.65
-       paypal    SIM-ORDER-DA9E1F57D994 → SIM-AUTH-D2364D99C3C3
+       paypal    SIM-ORDER-AB62C5B3DFC3 → SIM-AUTH-8B75C51E8931
 
 HOLD   2 drift, same ceiling        480.00 USD  intent 0.00
        because     category.scope: categories outside scope: electronics
                    intent.binding: intent match 0.00 below threshold 0.55 (matched nothing; intent mentions office, paper, printer, restock which the basket does not contain)
        would need  remove electronics items or widen the mandate's scope
-       decision    dec_7e27c67437f9
+       decision    dec_65dae8be0cab
 
 HOLD   3 over ceiling               534.00 USD  intent 0.59
        because     mandate.ceiling: 534.00 USD is 34.00 over the 500.00 ceiling
        would need  remove 34.00 USD of goods, or approve this one purchase
-       decision    dec_f6c9eb28b23a
+       decision    dec_7275526ab880
 
 HOLD   4 new vendor                  30.00 USD  intent 0.61
        because     vendor.approved: vendor V-FRESH is not an approved payee
                    vendor.maturity: vendor is 12 days old; mandate requires 30
        would need  add V-FRESH to this mandate's allowed vendors
-       decision    dec_8fc6248e11ca
+       decision    dec_fd77d6c9990c
 
 ALLOW  5 same basket, granted       534.00 USD  intent 0.59
-       paypal    SIM-ORDER-AF1BC1696103 → SIM-AUTH-4F9FF1B0666B
+       paypal    SIM-ORDER-75C991FF7882 → SIM-AUTH-939497782C94
+
+ALLOW  6 authorised, then voided     30.00 USD  intent 0.61
+       authorised  SIM-AUTH-F22B72E8486A   money not taken yet
+       voided      SIM-AUTH-F22B72E8486A   (simulated)
+       because     the mandate was revoked after authorisation; the authorisation
+                   window is what makes that possible without a refund
 
 ------------------------------------------------------------------------------
-allowed 2   held 3   denied 0
+allowed 3   held 3   denied 0
 ------------------------------------------------------------------------------
-verify dec_3538aad6211e  →  True  (signature valid)
+verify dec_ccdfaaa21887  →  True  (signature valid)
 verify tampered receipt  →  False  (signature does not match payload - receipt was modified or the key is wrong)
 
 Every decision above, paid or refused, is a signed receipt:
@@ -185,8 +194,16 @@ actually wants and cannot get from a card statement.
 ```bash
 cp .env.example .env      # add sandbox client id + secret
 export $(grep -v '^#' .env | xargs)
+
+python -m warden.cli preflight        # which rail will run, and whether the key works
+python -m warden.demo --rail sandbox  # the six scenarios against real PayPal calls
 python -m warden.cli serve
 ```
+
+`preflight` exists because a wrong client id and a wrong environment both present as the same
+confusing failure minutes into a demo. `--rail sandbox` **errors** rather than falling back to the
+simulator: a demo that quietly degrades from a real call to a fake one would be the exact failure
+this project exists to catch.
 
 The rail switches to `sandbox` and calls `POST /v2/checkout/orders` with `intent=AUTHORIZE`,
 returning PayPal's own approval URL. Approving it as the sandbox buyer, then capturing, is the
@@ -216,6 +233,13 @@ Being exact about this is the point of the project, so it should apply to the RE
 | Receipt signing | HMAC-SHA256 with a key from the environment. **Production needs asymmetric signing or a KMS** |
 | Webhook verification | Not implemented in this build. A real deployment must verify `PAYPAL-TRANSMISSION-SIG` |
 | Vendor age / approval | Supplier data is a local catalogue in `catalog.py`. Production would read a vendor master |
+
+### Why the flow authorises before capturing
+
+The sixth scenario does something a capture-first flow cannot: it authorises a payment and then
+voids it, because authority was withdrawn in between. The money never moves, so there is no refund
+to chase and no dispute to win. That authorisation window is not an implementation detail — it is
+the space in which a hold can exist at all.
 
 ## Challenges
 

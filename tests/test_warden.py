@@ -262,3 +262,53 @@ def test_api_rejects_an_unknown_mandate(tmp_path) -> None:
         },
     )
     assert response.status_code == 404
+
+
+# ── the rail must never lie ─────────────────────────────────────────────────────────────────
+
+
+def test_asking_for_the_sandbox_without_credentials_is_an_error_not_a_fallback(monkeypatch) -> None:
+    """Silently degrading to the simulator would be the failure this project exists to catch."""
+    from warden.demo import select_rail
+
+    monkeypatch.delenv("WARDEN_PAYPAL_CLIENT_ID", raising=False)
+    monkeypatch.delenv("WARDEN_PAYPAL_CLIENT_SECRET", raising=False)
+    with pytest.raises(SystemExit):
+        select_rail("sandbox")
+
+
+def test_the_simulator_labels_itself_everywhere(monkeypatch) -> None:
+    from warden.demo import select_rail
+
+    rail = select_rail("simulated")
+    assert rail.mode == "simulated"
+    order = rail.create_order(10.0, "USD", "ref")
+    assert str(order["order_id"]).startswith("SIM-ORDER")
+
+
+def test_an_authorised_payment_can_be_voided_and_the_money_never_moves() -> None:
+    """The authorisation window is the space a hold exists in - and the reason for AUTHORIZE."""
+    gateway = new_gateway()
+    mandate = standard_mandate(gateway)
+    decision, decision_id = gateway.attempt(
+        mandate, vendor("V-ACME"), [item("SKU-PAPER", 4)], "restock printer paper for the office"
+    )
+    assert decision.outcome is Outcome.ALLOW
+    authorization = gateway.authorization_for(decision_id)
+    assert authorization == decision.paypal["authorization_id"]
+
+    voided = gateway.void(decision_id)
+    assert voided["voided"] == authorization
+    assert voided["status"] == "VOIDED"
+
+
+def test_capture_and_void_need_a_real_authorisation() -> None:
+    gateway = new_gateway()
+    mandate = standard_mandate(gateway)
+    _, held_id = gateway.attempt(
+        mandate, vendor("V-ACME"), [item("SKU-ESPRESSO", 1)], "restock printer paper"
+    )
+    with pytest.raises(KeyError):
+        gateway.capture(held_id)
+    with pytest.raises(KeyError):
+        gateway.void(held_id)

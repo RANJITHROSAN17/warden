@@ -67,8 +67,17 @@ class SandboxPayPal:
             },
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=30) as response:
-            return str(json.loads(response.read().decode("utf-8"))["access_token"])
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return str(json.loads(response.read().decode("utf-8"))["access_token"])
+        except urllib.error.HTTPError as exc:
+            # A bad client id, a bad secret and a sandbox-vs-live mix-up all land here as 401.
+            raise PayPalError(
+                f"OAuth failed ({exc.code}). Check the client id and secret belong to the "
+                f"sandbox app, not live."
+            ) from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            raise PayPalError(f"cannot reach the PayPal sandbox: {exc}") from exc
 
     def _call(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
         headers = {
