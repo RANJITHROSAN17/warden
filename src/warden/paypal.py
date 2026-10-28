@@ -38,7 +38,9 @@ class PaymentRail(Protocol):
 
     def authorize(self, order_id: str) -> dict[str, Any]: ...
 
-    def capture(self, authorization_id: str) -> dict[str, Any]: ...
+    def capture(
+        self, authorization_id: str, amount: float | None = None, currency: str = "USD"
+    ) -> dict[str, Any]: ...
 
     def void(self, authorization_id: str) -> dict[str, Any]: ...
 
@@ -137,9 +139,20 @@ class SandboxPayPal:
             "status": result.get("status"),
         }
 
-    def capture(self, authorization_id: str) -> dict[str, Any]:
-        result = self._call("POST", f"/v2/payments/authorizations/{authorization_id}/capture", {})
-        return {"mode": self.mode, "capture_id": result.get("id"), "status": result.get("status")}
+    def capture(
+        self, authorization_id: str, amount: float | None = None, currency: str = "USD"
+    ) -> dict[str, Any]:
+        """Capture all or part of an authorisation. PayPal accepts an explicit amount here."""
+        body: dict[str, Any] = {}
+        if amount is not None:
+            body["amount"] = {"currency_code": currency, "value": f"{amount:.2f}"}
+        result = self._call("POST", f"/v2/payments/authorizations/{authorization_id}/capture", body)
+        return {
+            "mode": self.mode,
+            "capture_id": result.get("id"),
+            "status": result.get("status"),
+            "amount": amount,
+        }
 
     def void(self, authorization_id: str) -> dict[str, Any]:
         self._call("POST", f"/v2/payments/authorizations/{authorization_id}/void", {})
@@ -153,6 +166,9 @@ class SimulatedPayPal:
 
     def __init__(self) -> None:
         self._orders: dict[str, dict[str, Any]] = {}
+        # When set, a capture above this amount is declined the way an issuer would decline it.
+        # Tests and the compensate story use it to exercise the failure path for real.
+        self.instrument_limit: float | None = None
 
     def create_order(self, amount: float, currency: str, reference: str) -> dict[str, Any]:
         order_id = f"SIM-ORDER-{uuid.uuid5(uuid.NAMESPACE_URL, reference).hex[:12].upper()}"
@@ -177,7 +193,22 @@ class SimulatedPayPal:
         order["authorization_id"] = authorization_id
         return {"mode": self.mode, "authorization_id": authorization_id, "status": "AUTHORIZED"}
 
-    def capture(self, authorization_id: str) -> dict[str, Any]:
+    def capture(
+        self, authorization_id: str, amount: float | None = None, currency: str = "USD"
+    ) -> dict[str, Any]:
+        over_limit = (
+            self.instrument_limit is not None
+            and amount is not None
+            and round(amount, 2) > round(self.instrument_limit, 2)
+        )
+        if over_limit:
+            return {
+                "mode": self.mode,
+                "status": "DECLINED",
+                "reason": "INSTRUMENT_DECLINED",
+                "declined_amount": round(amount, 2),
+                "instrument_limit": round(self.instrument_limit, 2),
+            }
         return {
             "mode": self.mode,
             "capture_id": f"SIM-CAP-{authorization_id[-8:]}",

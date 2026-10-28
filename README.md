@@ -48,6 +48,32 @@ Warden adds the two dimensions a tool flag cannot express:
 It is complementary to the Toolkit, not a replacement: put Warden in front of the PayPal tools and
 they inherit authority and evidence.
 
+## The payment that half-happens
+
+```bash
+python -m warden.demo --story compensate
+```
+
+Every agent-payment control guards the decision to spend. Almost none guards the gap **between
+`AUTHORIZE` and `CAPTURE`**, where the money is committed, the customer is waiting, and capture can
+still fail.
+
+```
+ALLOW  1 authorised                 480.00 USD
+       held in     SIM-AUTH-3373078BD19F   money committed, not taken
+2  capture
+       declined    DECLINED  INSTRUMENT_DECLINED
+                   issuer clears 300.00 of 480.00; authorisation still open
+3  the agent decides, inside the original mandate
+       capture     300.00 USD  COMPLETED
+       void        180.00 USD  VOIDED
+       net         300.00 settled, 180.00 never taken
+```
+
+A rule can decline. An agent can decide **what part of the payment should still happen** — partial
+capture is a real PayPal capability, not a simulation of one. The buyer gets goods today instead of
+a support ticket, and the seller is paid for what it can actually ship.
+
 ## Agent hires agent, and the money waits
 
 ```bash

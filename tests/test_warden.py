@@ -636,3 +636,62 @@ def test_recovery_counts_blocked_mandates_that_came_back(tmp_path) -> None:
     # A take rate is supplied, never assumed by the server.
     priced = client.get("/api/recovery?take_rate=0.02").json()
     assert priced["recovered_fee_revenue"] == round(summary["recovered_volume"] * 0.02, 2)
+
+
+# ── the window after authorisation ─────────────────────────────────────────────────────────
+
+
+def test_a_declined_capture_leaves_the_authorisation_open() -> None:
+    """A capture failure is not the end of the payment - the money is still committed."""
+    gateway = new_gateway()
+    gateway.rail.instrument_limit = 300.0
+    mandate = standard_mandate(gateway, ceiling=500.0)
+    decision, decision_id = gateway.attempt(
+        mandate,
+        vendor("V-ACME"),
+        [
+            LineItem(
+                sku="SKU-TONER",
+                description="printer toner restock for the office",
+                category="office_supplies",
+                qty=1,
+                unit_price=480.0,
+            )
+        ],
+        "restock printer toner for the office",
+    )
+    assert decision.outcome is Outcome.ALLOW
+
+    failed = gateway.capture(decision_id, 480.0)
+    assert failed["status"] == "DECLINED"
+    assert gateway.authorization_for(decision_id), "the authorisation must survive the decline"
+
+
+def test_part_of_the_payment_still_happens() -> None:
+    """Partial capture then void: the buyer gets 300 of goods, 180 never leaves."""
+    gateway = new_gateway()
+    gateway.rail.instrument_limit = 300.0
+    mandate = standard_mandate(gateway, ceiling=500.0)
+    _, decision_id = gateway.attempt(
+        mandate,
+        vendor("V-ACME"),
+        [
+            LineItem(
+                sku="SKU-TONER",
+                description="printer toner restock for the office",
+                category="office_supplies",
+                qty=1,
+                unit_price=480.0,
+            )
+        ],
+        "restock printer toner for the office",
+    )
+
+    captured = gateway.capture(decision_id, 300.0)
+    assert captured["status"] == "COMPLETED"
+
+    released = gateway.void(decision_id)
+    assert released["status"] == "VOIDED"
+
+    row = next(r for r in gateway.ledger.rows() if r["id"] == decision_id)
+    assert row["money_state"] in {"part_captured", "voided"}, row["money_state"]

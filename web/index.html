@@ -137,6 +137,8 @@ const MONEY = {
   authorised: ["auth", "IN ESCROW"],
   captured:   ["allow", "PAID"],
   voided:     ["rel", "RELEASED"],
+  part_captured: ["hold", "PART CAPTURED"],
+  capture_failed: ["deny", "CAPTURE FAILED"],
 };
 
 function moneyChip(value) {

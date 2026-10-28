@@ -624,6 +624,91 @@ def run_market_story(mode: str = "auto") -> int:
     return 0
 
 
+def run_compensation_story(mode: str = "auto") -> int:
+    """The window after authorisation, which nothing in the field governs.
+
+    Every control in agentic payments guards the decision to spend. Almost none guards the gap
+    between AUTHORISE and CAPTURE, where the money is already committed, the customer is already
+    waiting, and capture can still fail.
+
+    Here the capture fails. A rule cannot do much with that; a human in an ops queue can, slowly.
+    The agent reads the failure, stays inside the original mandate, captures what the instrument
+    will bear, and releases the rest - so the buyer gets a partial shipment instead of a dead
+    order, and the seller gets paid for what it can actually ship.
+    """
+    gateway = Gateway(ledger=Ledger(":memory:"), rail=select_rail(mode))
+    rail = gateway.rail
+    if hasattr(rail, "instrument_limit"):
+        rail.instrument_limit = 300.0  # this issuer will not clear the full amount
+
+    mandate = gateway.issue_mandate(
+        purpose="Q4 office restock",
+        ceiling=500.0,
+        categories=("office_supplies",),
+        min_vendor_age_days=30,
+        intent_threshold=0.5,
+        allowed_vendors=("V-ACME",),
+    )
+    line = LineItem(
+        sku="SKU-TONER",
+        description="printer toner restock for the office",
+        category="office_supplies",
+        qty=1,
+        unit_price=480.0,
+    )
+
+    print()
+    print("WARDEN  -  the payment that half-happened")
+    print(RULE)
+    print(f"mode      {gateway.rail.mode}")
+    print(f"mandate   {mandate.id}   ceiling {mandate.ceiling:.2f} {mandate.currency}")
+    print(RULE)
+    print()
+
+    decision, decision_id = gateway.attempt(
+        mandate, vendor("V-ACME"), [line], "restock printer toner for the office"
+    )
+    print(_line(decision, "1 authorised"))
+    print(
+        f"       held in     {decision.paypal.get('authorization_id')}   money committed, not taken"
+    )
+    print(f"       receipt     {decision_id}")
+    print()
+
+    print("2  capture")
+    failed = gateway.capture(decision_id, decision.amount)
+    print(f"       declined    {failed.get('status')}  {failed.get('reason', '')}")
+    clear = float(failed.get("instrument_limit") or 0.0)
+    asked = float(failed.get("declined_amount") or 0.0)
+    print(f"                   issuer clears {clear:.2f} of {asked:.2f}; authorisation still open")
+    print()
+
+    print("3  the agent decides, inside the original mandate")
+    available = float(failed.get("instrument_limit") or 0.0)
+    remainder = round(decision.amount - available, 2)
+    captured = gateway.capture(decision_id, available)
+    print(f"       capture     {available:.2f} {decision.currency}  {captured.get('status')}")
+    released = gateway.void(decision_id)
+    print(f"       void        {remainder:.2f} {decision.currency}  {released.get('status')}")
+    print(f"       net         {available:.2f} settled, {remainder:.2f} never taken")
+    print()
+
+    print(RULE)
+    print(verdict_line(available, remainder, decision.currency))
+    print()
+    print("A rule can decline. An agent can decide what part of the payment should still happen.")
+    print("The authorisation bounded the decision; the receipts bound what was claimed afterwards.")
+    print()
+    return 0
+
+
+def verdict_line(available: float, remainder: float, currency: str) -> str:
+    return (
+        f"the buyer gets {available:.2f} {currency} of goods today instead of none, "
+        f"and {remainder:.2f} never leaves."
+    )
+
+
 def run_injection_story(mode: str = "auto") -> int:
     """The agent has been talked into it. The guard does not care what the agent believes.
 
@@ -692,7 +777,7 @@ def _main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--story",
-        choices=["purchase", "payout", "negotiate", "heal", "inject", "market"],
+        choices=["purchase", "payout", "negotiate", "heal", "inject", "market", "compensate"],
         default="purchase",
         help=(
             "purchase: agent buying goods · payout: paying a contractor · "
@@ -710,6 +795,8 @@ def _main(argv: list[str] | None = None) -> int:
         return run_injection_story(args.rail)
     if args.story == "market":
         return run_market_story(args.rail)
+    if args.story == "compensate":
+        return run_compensation_story(args.rail)
     return run(args.rail)
 
 

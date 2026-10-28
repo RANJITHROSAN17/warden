@@ -197,10 +197,27 @@ class Gateway:
             raise KeyError("this decision has no authorization - it was held, denied, or unset")
         return entry[1]
 
-    def capture(self, decision_id: str) -> dict:
-        """Take the money. Returns the capture record."""
-        result = self.rail.capture(self.authorization_for(decision_id))
-        self.ledger.set_money_state(decision_id, "captured", str(result.get("capture_id") or ""))
+    def capture(self, decision_id: str, amount: float | None = None) -> dict:
+        """Take all or part of the money.
+
+        A partial capture is a real PayPal capability, and it is the difference between a failed
+        payment and a partial one that still ships something.
+        """
+        decision = self.ledger.receipt(decision_id) or {}
+        currency = (decision.get("payload", {}).get("mandate") or {}).get("currency", "USD")
+        result = self.rail.capture(self.authorization_for(decision_id), amount, currency)
+        status = str(result.get("status") or "")
+        if status == "DECLINED":
+            self.ledger.set_money_state(
+                decision_id, "capture_failed", str(result.get("reason") or "")
+            )
+            return result
+        full = amount is None or result.get("amount") is None
+        self.ledger.set_money_state(
+            decision_id,
+            "captured" if full else "part_captured",
+            str(result.get("capture_id") or ""),
+        )
         return result
 
     def void(self, decision_id: str) -> dict:
