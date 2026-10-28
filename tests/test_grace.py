@@ -465,3 +465,93 @@ def test_the_market_story_holds_then_releases_the_remainder() -> None:
     from grace.demo import story_market
 
     assert story_market(mode="simulated") == 0
+
+
+# ── the grounding gate: a model may write, but a rule decides what survives ─────────────────
+
+
+def _findings():
+    from grace import dispute as d
+
+    found = d.Dispute(
+        "dsp_1", "pay_1", "ITEM_NOT_RECEIVED", 180.0, "USD", "never arrived", "2026-11-04"
+    )
+    evidence = [
+        d.Evidence("ev_ship", "delivery_proof", "carrier scan 4471", "logistics"),
+        d.Evidence("ev_date", "delivery_date", "delivered 14 Oct", "logistics"),
+    ]
+    return found, d.assess(found, evidence).findings
+
+
+def test_a_sentence_that_cites_real_evidence_is_kept() -> None:
+    from grace import reasoning
+
+    _, findings = _findings()
+    check = reasoning.ground("The parcel was delivered, see ev_ship.", findings)
+    assert check.ok is True
+    assert check.kept == ("The parcel was delivered, see ev_ship.",)
+
+
+def test_a_sentence_that_cites_nothing_is_rejected() -> None:
+    from grace import reasoning
+
+    _, findings = _findings()
+    check = reasoning.ground("The customer is a known fraudster.", findings)
+    assert check.ok is False
+    assert check.rejected == ("The customer is a known fraudster.",)
+
+
+def test_a_sentence_citing_an_evidence_id_we_do_not_hold_is_rejected() -> None:
+    """Inventing an id is the exact move the gate exists to stop."""
+    from grace import reasoning
+
+    _, findings = _findings()
+    check = reasoning.ground("Delivery confirmed by ev_ghost.", findings)
+    assert check.ok is False
+    assert "ev_ghost" not in check.allowed_ids
+
+
+def test_a_model_that_invents_a_claim_is_discarded_entirely() -> None:
+    from grace import reasoning
+
+    found, findings = _findings()
+
+    class Liar:
+        name = "liar"
+
+        def complete(self, prompt: str) -> str:
+            return "The item was delivered on time (ev_ship). The buyer has a history of fraud."
+
+    result = reasoning.write_statement(found, findings, Liar())
+    assert result["used_fallback"] is True
+    assert "fraud" not in result["text"]
+    assert result["grounding"]["ok"] is False
+
+
+def test_a_model_that_stays_grounded_is_allowed_to_improve_the_prose() -> None:
+    from grace import reasoning
+
+    found, findings = _findings()
+
+    class Honest:
+        name = "honest"
+
+        def complete(self, prompt: str) -> str:
+            return (
+                "Delivery is evidenced by the carrier scan (ev_ship). "
+                "It was signed on 14 October (ev_date)."
+            )
+
+    result = reasoning.write_statement(found, findings, Honest())
+    assert result["used_fallback"] is False
+    assert result["text"].startswith("Delivery is evidenced")
+
+
+def test_the_default_provider_calls_nothing_and_is_still_grounded() -> None:
+    from grace import reasoning
+
+    found, findings = _findings()
+    result = reasoning.write_statement(found, findings)
+    assert result["provider"] == "template"
+    assert result["grounding"]["ok"] is True
+    assert "does not assert any fact" in result["text"]
