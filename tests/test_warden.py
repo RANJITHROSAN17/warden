@@ -575,3 +575,43 @@ def test_an_authorised_payment_can_be_voided_when_the_work_fails() -> None:
     assert check(acceptance, stub).passed is False
     released = gateway.void(decision_id)
     assert released.get("status") in {"VOIDED", "simulated"}
+
+
+def test_a_seller_concedes_downward_and_never_upward() -> None:
+    """The UI chart surfaced this: a counter that rises when the buyer raises its offer is nonsense.
+
+    Found while drawing the negotiation view - the seller's 505 sat below a later 509.46, which is
+    a merchant putting its price up mid-haggle.
+    """
+    from warden.negotiate import Seller
+
+    seller = Seller(list_price=534.0, floor=505.0, firmness=0.35)
+    counters = [
+        seller.respond(offer, rnd, "toner")[0]
+        for rnd, offer in enumerate([440.0, 470.0, 485.0, 492.5, 496.25], start=1)
+    ]
+    assert counters[0] <= seller.list_price
+    assert all(later <= earlier for earlier, later in zip(counters, counters[1:], strict=False))
+    assert min(counters) >= seller.floor, "a seller must never breach its own floor"
+
+
+def test_the_negotiation_view_reports_both_outcomes(tmp_path) -> None:
+    """The chart needs the ceiling, the floor, and both decisions or it cannot tell the story."""
+    from fastapi.testclient import TestClient
+
+    import warden.api as api_module
+
+    api_module.gateway = Gateway(ledger=Ledger(tmp_path / "neg.db"))
+    client = TestClient(api_module.app)
+    data = client.get("/api/negotiation").json()
+
+    assert data["mandate"]["ceiling"] == 500.0
+    assert data["seller"]["floor"] > data["mandate"]["ceiling"], "the gap is the point"
+    assert data["outcome"] == "walk_away"
+    assert data["over_ceiling"]["outcome"] == "hold"
+    assert data["deal"]["outcome"] == "allow"
+    assert data["deal"]["amount"] <= data["mandate"]["ceiling"]
+    buyer_offers = [r["price"] for r in data["rounds"] if r["speaker"] == "buyer"]
+    assert max(buyer_offers) <= data["mandate"]["ceiling"], (
+        "the buyer never offers past the ceiling"
+    )

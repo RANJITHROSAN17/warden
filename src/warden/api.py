@@ -208,6 +208,81 @@ def _seed_market() -> list[dict[str, Any]]:
     return created
 
 
+@app.get("/api/negotiation")
+def negotiation_view() -> dict[str, Any]:
+    """Run the two-agent haggle and hand the view every round, so the ceiling is watchable.
+
+    The transaction is real - the same gateway, the same rules - but nothing is captured here.
+    This endpoint exists because "the negotiation is the model's; the ceiling is not" is a claim
+    that has to be seen rather than read.
+    """
+    from warden.models import LineItem
+    from warden.models import Vendor as VendorModel
+    from warden.negotiate import Seller, negotiate
+
+    player = VendorModel(
+        id="V-ACME", name="Acme Office Supply", age_days=900, country="US", approved=True
+    )
+    mandate = gateway.issue_mandate(
+        purpose="Q4 office restock",
+        ceiling=500.0,
+        categories=["office_supplies"],
+        min_vendor_age_days=30,
+        intent_threshold=0.5,
+        allowed_vendors=["V-ACME"],
+    )
+    seller = Seller(list_price=534.0, floor=505.0, firmness=0.35)
+    result = negotiate(mandate, "printer toner", seller, max_rounds=5)
+
+    intent = "restock printer toner for the office"
+    description = "printer toner restock for the office"
+
+    def decision_at(total: float, units: int) -> dict[str, Any]:
+        unit_price = round(total / units, 2)
+        line = LineItem(
+            sku="SKU-TONER",
+            description=description,
+            category="office_supplies",
+            qty=units,
+            unit_price=unit_price,
+        )
+        found, found_id = gateway.attempt(mandate, player, [line], intent)
+        return {
+            "price": round(total, 2),
+            "units": units,
+            "amount": round(unit_price * units, 2),
+            "outcome": found.outcome.value,
+            "decision_id": found_id,
+            "reasons": list(found.reasons),
+            "counterfactual": found.counterfactual,
+        }
+
+    # What would have happened had the buyer simply conceded at the listing price.
+    over = decision_at(seller.list_price, 6)
+    # What actually happened: the buyer walked away and negotiated a smaller basket.
+    deal = decision_at(445.0, 5)
+
+    return {
+        "mandate": {"id": mandate.id, "ceiling": mandate.ceiling, "currency": mandate.currency},
+        "seller": {"list_price": seller.list_price, "floor": seller.floor},
+        "rounds": [
+            {
+                "number": round_.number,
+                "speaker": round_.speaker,
+                "price": round_.price,
+                "message": round_.message,
+            }
+            for round_ in result.rounds
+        ],
+        "outcome": "deal" if result.succeeded else "walk_away",
+        "agreed_price": result.agreed_price,
+        "walk_away_reason": result.walk_away_reason,
+        "planner": result.planner,
+        "over_ceiling": over,
+        "deal": deal,
+    }
+
+
 @app.get("/api/money")
 def money() -> dict[str, Any]:
     """Where the money is right now: in escrow, paid, or released without ever moving."""

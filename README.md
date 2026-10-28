@@ -260,11 +260,18 @@ python -m warden.demo --story negotiate
 ```
 
 ```
-seller    534.00 USD  listed price
-buyer     440.00 USD  I can commit 440.00 USD. That is my budget for 6 x toner cartridges.
-seller    505.00 USD  Best we can offer is 505.00 USD; costs have moved.
-buyer     470.00 USD  ...
-buyer   walk away     seller's floor 505.00 USD is above the mandate ceiling 500.00 USD
+   seller    534.00 USD  listed price
+   buyer     440.00 USD  I can commit 440.00 USD. That is my budget for 6 x toner cartridges.
+   seller    531.68 USD  Best we can offer is 531.68 USD; costs have moved.
+   buyer     470.00 USD  I can commit 470.00 USD. That is my budget for 6 x toner cartridges.
+   seller    529.36 USD  Best we can offer is 529.36 USD; costs have moved.
+   buyer     485.00 USD  I can commit 485.00 USD. That is my budget for 6 x toner cartridges.
+   seller    527.04 USD  Best we can offer is 527.04 USD; costs have moved.
+   buyer     492.50 USD  I can commit 492.50 USD. That is my budget for 6 x toner cartridges.
+   seller    524.72 USD  Best we can offer is 524.72 USD; costs have moved.
+   buyer     496.25 USD  I can commit 496.25 USD. That is my budget for 6 x toner cartridges.
+   seller    522.40 USD  Best we can offer is 522.40 USD; costs have moved.
+   buyer   walk away                seller's floor 505.00 USD is above the mandate ceiling 500.00 USD; no agreement is possible inside this authority
 ```
 
 The buyer does not concede past its limit — it negotiates a **smaller basket** instead (445.00,

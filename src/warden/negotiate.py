@@ -119,14 +119,22 @@ class Seller:
         self.firmness = firmness
 
     def respond(self, offer: float, rnd: int, item: str) -> tuple[float, str]:
+        """Concede from the list price toward the floor, and never upward.
+
+        The first version of this returned `offer + (list - offer) * firmness`, which meant that as
+        the buyer climbed the seller's counter climbed too - a seller raising its price mid-haggle.
+        The chart in the UI is what surfaced it. A concession curve only moves one way.
+        """
         if offer >= self.list_price:
             return self.list_price, f"Agreed at list: {self.list_price:.2f} {self.currency}."
         if offer >= self.floor:
             return offer, f"We can do {offer:.2f} {self.currency}. That is the bottom."
-        step = round(max(self.floor, offer + (self.list_price - offer) * self.firmness), 2)
-        if step <= offer:
+
+        conceded = (self.list_price - self.floor) * min(1.0, self.firmness * rnd)
+        counter = round(max(self.floor, self.list_price - conceded), 2)
+        if counter <= self.floor:
             return self.floor, f"{self.floor:.2f} {self.currency} is our floor. Final."
-        return step, f"Best we can offer is {step:.2f} {self.currency}; costs have moved."
+        return counter, f"Best we can offer is {counter:.2f} {self.currency}; costs have moved."
 
 
 def negotiate(
