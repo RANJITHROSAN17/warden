@@ -17,8 +17,9 @@ import sys
 from warden.catalog import item, vendor
 from warden.gateway import Gateway
 from warden.ledger import Ledger
-from warden.models import Decision, Outcome
+from warden.models import Decision, LineItem, Outcome, Vendor
 from warden.paypal import PayPalError, SandboxPayPal, SimulatedPayPal
+from warden.workorder import Deliverable, WorkOrder
 
 RULE = "-" * 78
 
@@ -189,6 +190,110 @@ def run(mode: str = "auto") -> int:
     return 0
 
 
+def run_payout_story(mode: str = "auto") -> int:
+    """Paying a contractor when the job is marked complete - including when it isn't.
+
+    Same engine as the purchasing story: a mandate, a basket, a stated intent, signed receipts.
+    Only the domain changes, which is the point - the guard is not specific to shopping.
+    """
+    gateway = Gateway(ledger=Ledger(":memory:"), rail=select_rail(mode))
+    contractor = Vendor(
+        id="C-0042", name="A. Rivera (design)", age_days=520, country="US", approved=True
+    )
+
+    print()
+    print("WARDEN  -  paying for work when the job is marked complete")
+    print(RULE)
+    print(f"mode      {gateway.rail.mode}")
+    print("contractor C-0042  A. Rivera (design)   520 days, approved")
+    print(RULE)
+    print()
+
+    # A complete job: every deliverable accepted.
+    finished = WorkOrder(
+        id="WO-1042",
+        title="Landing page redesign",
+        contractor=contractor,
+        deliverables=(
+            Deliverable("D1", "Landing page redesign, 3 breakpoints", 900.0, "figma+html", True),
+            Deliverable("D2", "Mobile navigation fix", 150.0, "pr#88", True),
+        ),
+    )
+    mandate = gateway.issue_mandate(
+        purpose=f"pay {finished.id} {finished.title}",
+        ceiling=finished.total + 50.0,
+        categories=("contract_work",),
+        min_vendor_age_days=30,
+        intent_threshold=0.5,
+        allowed_vendors=(contractor.id,),
+    )
+
+    decision, decision_id = gateway.attempt(
+        mandate,
+        contractor,
+        [d.as_line_item() for d in finished.satisfied],
+        finished.completion_claim(),
+    )
+    print(_line(decision, "1 job complete"))
+    print(
+        f"       paypal      {decision.paypal.get('order_id')} → "
+        f"{decision.paypal.get('authorization_id')}"
+    )
+    print(f"       receipt     {decision_id}")
+    print()
+
+    # The same contractor, a job where one deliverable was never handed over.
+    partial = WorkOrder(
+        id="WO-1043",
+        title="Brand refresh",
+        contractor=contractor,
+        deliverables=(
+            Deliverable("D1", "Logo set, 4 variants", 700.0, "svg pack", True),
+            Deliverable("D2", "Brand guidelines PDF", 600.0, "", False),
+        ),
+    )
+    mandate2 = gateway.issue_mandate(
+        purpose=f"pay {partial.id} {partial.title}",
+        ceiling=partial.total + 50.0,
+        categories=("contract_work",),
+        min_vendor_age_days=30,
+        intent_threshold=0.5,
+        allowed_vendors=(contractor.id,),
+    )
+    # The agent bills the full order and says it delivered everything. The claim is text the
+    # agent wrote, so it agrees with itself; the evidence field is what disagrees.
+    claimed = f"work order {partial.id} complete: " + "; ".join(
+        d.description for d in partial.deliverables
+    )
+    billed = [
+        LineItem(
+            sku=d.id,
+            description=d.description,
+            category="contract_work",
+            qty=1,
+            unit_price=d.amount,
+            evidence=d.delivered,
+        )
+        for d in partial.deliverables
+    ]
+    decision, decision_id = gateway.attempt(mandate2, contractor, billed, claimed)
+    print(_line(decision, "2 missing deliverable"))
+    print("       because     the completion claim is text the agent wrote, so it agrees with")
+    print("                   itself; the evidence field is what disagrees - D2 has no artefact")
+    print("       would need  attach evidence to D2, or bill only the accepted deliverable")
+    print(f"       receipt     {decision_id}")
+    print()
+
+    print(RULE)
+    ok, message = gateway.ledger.verify(decision_id)
+    print(f"verify {decision_id}  →  {ok}  ({message})")
+    print()
+    print("Both decisions are signed. The second one is the interesting receipt: it records")
+    print("that the payout was stopped, by which rule, and what would have released it.")
+    print()
+    return 0
+
+
 def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Five scenarios, decided by the real engine.")
     parser.add_argument(
@@ -197,7 +302,15 @@ def _main(argv: list[str] | None = None) -> int:
         default=os.environ.get("WARDEN_RAIL", "auto"),
         help="auto uses sandbox credentials when present, otherwise the labelled stand-in",
     )
+    parser.add_argument(
+        "--story",
+        choices=["purchase", "payout"],
+        default="purchase",
+        help="purchase: agent buying goods. payout: paying a contractor for completed work.",
+    )
     args = parser.parse_args(argv)
+    if args.story == "payout":
+        return run_payout_story(args.rail)
     return run(args.rail)
 
 

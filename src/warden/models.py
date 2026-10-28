@@ -62,6 +62,9 @@ class LineItem:
     category: str
     qty: int
     unit_price: float
+    # For work rather than goods: the artefact that proves it was delivered. A commit, a PR, a
+    # signed-off file. Anything the payer can check. Empty means "claimed, not evidenced".
+    evidence: str = ""
 
     @property
     def total(self) -> float:
@@ -75,6 +78,7 @@ class LineItem:
             "qty": self.qty,
             "unit_price": self.unit_price,
             "total": self.total,
+            "evidence": self.evidence,
         }
 
 

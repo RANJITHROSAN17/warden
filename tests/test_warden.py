@@ -11,7 +11,7 @@ from warden.catalog import item, vendor
 from warden.gateway import Gateway
 from warden.intent import LexicalJudge, tokenize
 from warden.ledger import Ledger
-from warden.models import Mandate, Outcome
+from warden.models import LineItem, Mandate, Outcome, Vendor
 
 pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
 
@@ -312,3 +312,64 @@ def test_capture_and_void_need_a_real_authorisation() -> None:
         gateway.capture(held_id)
     with pytest.raises(KeyError):
         gateway.void(held_id)
+
+
+# ── paying for work, not goods ───────────────────────────────────────────────────────────────
+
+
+def test_a_billed_deliverable_without_evidence_is_held() -> None:
+    """Intent binding compares a basket to a sentence the agent wrote, so an agent that
+    accurately describes its own non-delivery passes it. Evidence is the input that isn't prose."""
+    gateway = new_gateway()
+    mandate = gateway.issue_mandate(
+        purpose="pay WO-1043",
+        ceiling=1400.0,
+        categories=("contract_work",),
+        min_vendor_age_days=30,
+        intent_threshold=0.5,
+        allowed_vendors=("C-0042",),
+    )
+    contractor = Vendor(id="C-0042", name="A. Rivera", age_days=520, country="US", approved=True)
+    items = [
+        LineItem("D1", "Logo set, 4 variants", "contract_work", 1, 700.0, "svg pack"),
+        LineItem("D2", "Brand guidelines PDF", "contract_work", 1, 600.0, ""),
+    ]
+    decision, _ = gateway.attempt(
+        mandate,
+        contractor,
+        items,
+        "work order WO-1043 complete: Logo set, 4 variants; Brand guidelines PDF",
+    )
+    assert decision.outcome is Outcome.HOLD
+    failed = {rule.rule_id for rule in decision.rules if not rule.passed}
+    assert "delivery.evidence" in failed
+
+
+def test_an_evidenced_deliverable_is_paid() -> None:
+    gateway = new_gateway()
+    mandate = gateway.issue_mandate(
+        purpose="pay WO-1042",
+        ceiling=1200.0,
+        categories=("contract_work",),
+        min_vendor_age_days=30,
+        intent_threshold=0.5,
+        allowed_vendors=("C-0042",),
+    )
+    contractor = Vendor(id="C-0042", name="A. Rivera", age_days=520, country="US", approved=True)
+    items = [
+        LineItem("D1", "Landing page redesign", "contract_work", 1, 900.0, "pr#87"),
+        LineItem("D2", "Mobile navigation fix", "contract_work", 1, 150.0, "pr#88"),
+    ]
+    decision, _ = gateway.attempt(
+        mandate,
+        contractor,
+        items,
+        "work order WO-1042 complete: Landing page redesign; Mobile navigation fix",
+    )
+    assert decision.outcome is Outcome.ALLOW
+
+
+def test_the_evidence_rule_is_recorded_in_the_receipt() -> None:
+    from warden.demo import run_payout_story
+
+    assert run_payout_story("simulated") == 0

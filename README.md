@@ -27,6 +27,23 @@ has never known what the purchase was *for*.
 
 Warden does, because the agent has to say.
 
+## Where it sits in PayPal's agent stack
+
+PayPal already ships an [Agent Toolkit](https://github.com/paypal/AI-Toolkit) and an MCP server
+exposing `create_order`, `pay_order`, `create_refund`, `list_disputes` and more. Those tools give
+an agent **capability** — what it is able to do. Their own docs describe the `--tools` flag as
+"useful for limiting the scope of the agent's permissions", which is tool-level scoping.
+
+Warden adds the two dimensions a tool flag cannot express:
+
+1. **Intent authority** — not *may this agent call `pay_order`*, but *does this specific payment
+   match the reason the agent gave for making it*.
+2. **Proof** — a signed record of the decision that a third party can verify without the agent,
+   the ledger, or us.
+
+It is complementary to the Toolkit, not a replacement: put Warden in front of the PayPal tools and
+they inherit authority and evidence.
+
 ## What it does
 
 Before an agent can spend, it is given a **mandate**: one purpose, one ceiling, a category scope,
@@ -176,6 +193,17 @@ Every decision above, paid or refused, is a signed receipt:
 ```
 
 <sub>Ids and hashes vary per run; every decision, rule and gate is deterministic.</sub>
+
+### The second story: paying for work, not goods
+
+```bash
+python -m warden.demo --story payout
+```
+
+A contractor's job is marked complete and the payment goes out. Then the same contractor bills a
+full order where one deliverable was never handed over — and the engine holds it, because the
+**evidence** field disagrees even though the agent's own claim does not. Same engine, different
+domain.
 
 ### The ledger
 

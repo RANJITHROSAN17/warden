@@ -170,7 +170,34 @@ def evaluate(
         )
     )
 
-    # 6. Does the basket match the reason the agent gave for buying it?
+    # 6. For work rather than goods: is there an artefact behind the claim?
+    #
+    # Intent binding compares the basket to a sentence the agent wrote, so it cannot catch an
+    # agent that describes its own non-delivery accurately. Evidence is the one input that does
+    # not come from the agent's prose, which is why it is a separate, deterministic rule.
+    unevidenced = sorted(
+        item.sku
+        for item in attempt.items
+        if item.category == "contract_work" and not item.evidence.strip()
+    )
+    rules.append(
+        RuleResult(
+            rule_id="delivery.evidence",
+            passed=not unevidenced,
+            detail=(
+                f"billed without a delivered artefact: {', '.join(unevidenced)}"
+                if unevidenced
+                else "every billed deliverable points at an artefact"
+            ),
+            counterfactual=(
+                f"attach evidence to {', '.join(unevidenced)} or remove it from the invoice"
+                if unevidenced
+                else None
+            ),
+        )
+    )
+
+    # 7. Does the basket match the reason the agent gave for buying it?
     matches = intent.score >= mandate.intent_threshold
     rules.append(
         RuleResult(
