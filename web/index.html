@@ -52,44 +52,72 @@
   .verdict code { color:var(--ink); font-size:12.5px; }
   .verdict .muted { color:var(--dim); font-size:12.5px; }
   .rowlink { color:var(--accent); cursor:pointer; text-decoration:underline; }
+  .chip.auth { background:rgba(91,141,239,.16); color:var(--accent); }
+  .chip.rel  { background:rgba(139,151,173,.16); color:var(--dim); }
+  .card .v.auth { color:var(--accent); } .card .v.rel { color:var(--dim); }
+  .filters { display:flex; gap:6px; align-items:center; }
+  .filters button { background:transparent; border:1px solid var(--line); color:var(--dim);
+                    padding:6px 11px; font-weight:600; font-size:12px; }
+  .filters button.on { background:var(--panel); color:var(--ink); border-color:#3a4152; }
 </style>
 </head>
 <body>
 <header>
   <h1>Warden</h1>
-  <span class="tag">spend authority &amp; proof receipts for AI agents</span>
+  <span class="tag">settlement &amp; proof for agent-to-agent work</span>
   <span class="badge sim" id="mode">mode: …</span>
   <span class="badge" id="judge">judge: …</span>
 </header>
 <main>
   <div class="strip">
-    <div class="card"><div class="k">Allowed</div><div class="v allow" id="n-allow">0</div></div>
-    <div class="card"><div class="k">Held</div><div class="v hold" id="n-hold">0</div></div>
-    <div class="card"><div class="k">Denied</div><div class="v deny" id="n-deny">0</div></div>
-    <div class="card" style="flex:1">
-      <div class="k">What this shows</div>
-      <div style="color:var(--dim);font-size:12.5px;margin-top:4px">
-        Every agent payment, allowed or refused, with the rule that decided it and a signed receipt
-        you can re-verify. Click a row for the full payload.
-      </div>
-    </div>
-    <div style="display:flex;align-items:center;gap:8px">
-      <button id="seed">Run the five scenarios</button>
+    <div class="card money"><div class="k">In escrow — authorised, not taken</div><div class="v auth" id="m-auth">0.00</div></div>
+    <div class="card money"><div class="k">Paid — captured on proof</div><div class="v allow" id="m-paid">0.00</div></div>
+    <div class="card money"><div class="k">Released — voided</div><div class="v rel" id="m-void">0.00</div></div>
+    <div class="card"><div class="k">Decisions</div><div class="v" id="n-counts" style="font-size:15px">—</div></div>
+    <div style="display:flex;align-items:center;gap:8px;margin-left:auto">
+      <button id="seed">Run the scenarios</button>
       <button class="ghost" id="tamper">Tamper demo</button>
       <button class="ghost" id="refresh">Refresh</button>
     </div>
   </div>
+  <div class="filters">
+    <button class="on" data-filter="all">All</button>
+    <button data-filter="hold">Held</button>
+    <button data-filter="authorised">In escrow</button>
+    <button data-filter="captured">Paid</button>
+    <button data-filter="voided">Released</button>
+    <span class="note" style="margin:0 0 0 8px">the money has a state of its own, separate from the decision</span>
+  </div>
   <div id="grid" class="ag-theme-quartz-dark"></div>
   <div id="panel"></div>
   <p class="note">
-    <b>AG Grid</b> is the ledger, not decoration: filter <span class="mono">outcome = hold</span> to see
-    everything the agent wanted to buy and was stopped from buying, with the smallest change that would
-    have allowed it.
+    <b>AG Grid</b> is the ledger, not decoration. Filter <span class="mono">Held</span> to see everything an
+    agent wanted to buy and was stopped from buying, with the smallest change that would have allowed it.
+    Filter <span class="mono">In escrow</span> to see money that is committed and not taken — the state an
+    escrow actually lives in.
   </p>
 </main>
 <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@32.2.2/dist/ag-grid-community.min.js"></script>
 <script>
-const state = { rows: [], counts: { allow: 0, hold: 0, deny: 0 } };
+const state = { rows: [], counts: { allow: 0, hold: 0, deny: 0 }, money: [], filter: "all" };
+
+const MONEY = {
+  authorised: ["auth", "IN ESCROW"],
+  captured:   ["allow", "PAID"],
+  voided:     ["rel", "RELEASED"],
+};
+
+function moneyChip(value) {
+  const entry = MONEY[value];
+  if (!entry) return '<span class="mono">—</span>';
+  return `<span class="chip ${entry[0]}">${entry[1]}</span>`;
+}
+
+function visibleRows() {
+  if (state.filter === "all") return state.rows;
+  if (state.filter === "hold") return state.rows.filter(r => r.outcome === "hold");
+  return state.rows.filter(r => r.money_state === state.filter);
+}
 
 async function api(path, options) {
   const res = await fetch(path, Object.assign({ headers: { "Content-Type": "application/json" } }, options));
@@ -102,15 +130,25 @@ function chip(value) {
 }
 
 function renderCounts() {
-  document.getElementById("n-allow").textContent = state.counts.allow ?? 0;
-  document.getElementById("n-hold").textContent = state.counts.hold ?? 0;
-  document.getElementById("n-deny").textContent = state.counts.deny ?? 0;
+  const c = state.counts;
+  document.getElementById("n-counts").textContent =
+    `${c.allow ?? 0} allowed · ${c.hold ?? 0} held · ${c.deny ?? 0} denied`;
+}
+
+function renderMoney() {
+  const totals = { authorised: 0, captured: 0, voided: 0 };
+  const currency = state.money[0]?.currency || "USD";
+  for (const entry of state.money) totals[entry.money_state] = entry.total;
+  document.getElementById("m-auth").textContent = `${totals.authorised.toFixed(2)} ${currency}`;
+  document.getElementById("m-paid").textContent = `${totals.captured.toFixed(2)} ${currency}`;
+  document.getElementById("m-void").textContent = `${totals.voided.toFixed(2)} ${currency}`;
 }
 
 function fallbackTable() {
-  const rows = state.rows.map(r => `
+  const rows = visibleRows().map(r => `
     <tr>
       <td>${chip(r.outcome)}</td>
+      <td>${moneyChip(r.money_state)}</td>
       <td>${r.vendor || "—"}</td>
       <td>${r.amount.toFixed(2)} ${r.currency}</td>
       <td>${(r.reason || "").replace(/</g, "&lt;")}</td>
@@ -118,8 +156,8 @@ function fallbackTable() {
     </tr>`).join("");
   document.getElementById("grid").innerHTML = `
     <table class="fallback">
-      <thead><tr><th>Outcome</th><th>Vendor</th><th>Amount</th><th>Decided by</th><th>Receipt</th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="5" style="color:#8b97ad">No decisions yet — press “Run the five scenarios”.</td></tr>'}</tbody>
+      <thead><tr><th>Decision</th><th>Money</th><th>Counterparty</th><th>Amount</th><th>Decided by</th><th>Receipt</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="6" style="color:#8b97ad">No decisions yet — press “Run the scenarios”.</td></tr>'}</tbody>
     </table>
     <p class="note">AG Grid could not load (offline or blocked), so this is the plain renderer.
     The same data is served by <span class="mono">GET /api/ledger</span>.</p>`;
@@ -169,7 +207,9 @@ function renderGrid() {
     const columnDefs = [
       { field: "outcome", headerName: "Decision", width: 120,
         cellRenderer: p => chip(p.value) },
-      { field: "vendor", headerName: "Vendor", flex: 1, minWidth: 150 },
+      { field: "money_state", headerName: "Money", width: 130,
+        cellRenderer: p => moneyChip(p.value) },
+      { field: "vendor", headerName: "Counterparty", flex: 1, minWidth: 150 },
       { field: "amount", headerName: "Amount", width: 130,
         valueFormatter: p => `${p.value.toFixed(2)} ${p.data.currency}` },
       { field: "intent_score", headerName: "Intent match", width: 130,
@@ -180,7 +220,7 @@ function renderGrid() {
       { field: "id", headerName: "Receipt", width: 170, cellClass: "mono" },
     ];
     gridApi = agGrid.createGrid(document.getElementById("grid"), {
-      columnDefs, rowData: state.rows,
+      columnDefs, rowData: visibleRows(),
       defaultColDef: { sortable: true, resizable: true, filter: true },
       quickFilterText: "",
       rowHeight: 40, headerHeight: 38,
@@ -188,14 +228,25 @@ function renderGrid() {
       onRowClicked: e => verifyRow(e.data.id),
     });
   } else {
-    gridApi.setGridOption("rowData", state.rows);
+    gridApi.setGridOption("rowData", visibleRows());
   }
 }
 
 async function refresh() {
-  const data = await api("/api/ledger");
-  state.rows = data.rows; state.counts = data.counts;
-  renderCounts(); renderGrid();
+  const [data, money] = await Promise.all([api("/api/ledger"), api("/api/money")]);
+  state.rows = data.rows; state.counts = data.counts; state.money = money.summary;
+  renderCounts(); renderMoney(); renderGrid();
+}
+
+function wireFilters() {
+  document.querySelectorAll(".filters button").forEach(button => {
+    button.onclick = () => {
+      document.querySelectorAll(".filters button").forEach(b => b.classList.remove("on"));
+      button.classList.add("on");
+      state.filter = button.dataset.filter;
+      renderGrid();
+    };
+  });
 }
 
 async function boot() {
@@ -215,6 +266,7 @@ document.getElementById("seed").onclick = async () => {
 };
 document.getElementById("refresh").onclick = () => refresh();
 document.getElementById("tamper").onclick = () => tamperDemo();
+wireFilters();
 boot();
 </script>
 </body>

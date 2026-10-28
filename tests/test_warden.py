@@ -235,11 +235,19 @@ def test_api_seed_endpoint_produces_a_verifiable_ledger(tmp_path, monkeypatch) -
     client = TestClient(api_module.app)
 
     seeded = client.post("/api/demo/seed").json()
-    assert len(seeded["created"]) == 5
-    assert seeded["counts"] == {"allow": 2, "hold": 3, "deny": 0}
+    # Five purchasing scenarios, plus the agent-to-agent escrow pair.
+    assert len(seeded["created"]) == 8
+    assert seeded["counts"] == {"allow": 4, "hold": 4, "deny": 0}
 
     rows = client.get("/api/ledger").json()["rows"]
-    assert len(rows) == 5
+    assert len(rows) == 8
+
+    # The money has a state of its own, and every state is represented.
+    states = {row["money_state"] for row in rows if row["money_state"]}
+    assert {"authorised", "captured", "voided"} <= states
+    by_state = {entry["money_state"]: entry for entry in client.get("/api/money").json()["summary"]}
+    assert by_state["captured"]["total"] == 234.0
+    assert by_state["voided"]["total"] == 234.0
 
     for row in rows:
         assert client.get(f"/api/decisions/{row['id']}/verify").json()["ok"] is True

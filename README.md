@@ -2,11 +2,11 @@
 
 # Warden
 
-**Your agent has a spending limit. That is not the same as permission.**
+**One agent hires another. The money moves only when the work is proved.**
 
-Spend authority and proof receipts for AI agents that pay — built on the PayPal sandbox.
+Settlement and proof for agent-to-agent work — built on the PayPal sandbox.
 
-`PayPal Orders API` · `Authorize → Capture` · `AG Grid` · `MIT`
+`PayPal Orders API` · `Authorize → Capture → Void` · `AG Grid` · `MIT`
 
 <sub>Independent entry to the PayPal AI Hackathon. Not affiliated with or endorsed by PayPal.
 Sandbox only — no real money moves anywhere in this repository.</sub>
@@ -20,6 +20,10 @@ Sandbox only — no real money moves anywhere in this repository.</sub>
 An AI agent with a $500 ceiling will happily spend $480 on an espresso machine while reporting
 that it is restocking printer paper. Every control that exists today — virtual cards, merchant
 blocklists, per-transaction limits — answers **how much** and **who**. None of them answers *why*.
+
+And the moment one agent starts paying another — a buyer hiring a contractor, a procurement agent
+buying research, a scheduling agent paying a supplier — a second question appears that nothing in
+the market answers either: **has the work actually been done?** Warden holds the money until it has.
 
 That gap is not theoretical. It is the exact shape of agent failure: the agent has not been
 hacked, it has drifted, and it is still inside its limit. A card cannot see that, because a card

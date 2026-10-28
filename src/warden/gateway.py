@@ -160,6 +160,7 @@ class Gateway:
         pending = self._authorizations.pop("__pending__" + attempt.id, None)
         if pending is not None:
             self._authorizations[decision_id] = pending
+            self.ledger.set_money_state(decision_id, "authorised", pending[1])
         return decision, decision_id
 
     def _sign(
@@ -198,7 +199,9 @@ class Gateway:
 
     def capture(self, decision_id: str) -> dict:
         """Take the money. Returns the capture record."""
-        return self.rail.capture(self.authorization_for(decision_id))
+        result = self.rail.capture(self.authorization_for(decision_id))
+        self.ledger.set_money_state(decision_id, "captured", str(result.get("capture_id") or ""))
+        return result
 
     def void(self, decision_id: str) -> dict:
         """Release the authorization without taking the money.
@@ -207,4 +210,6 @@ class Gateway:
         the agent is authorised there is still a window in which a mandate can be revoked, and the
         money never leaves. A capture-first flow cannot do this.
         """
-        return self.rail.void(self.authorization_for(decision_id))
+        result = self.rail.void(self.authorization_for(decision_id))
+        self.ledger.set_money_state(decision_id, "voided", str(result.get("voided") or ""))
+        return result

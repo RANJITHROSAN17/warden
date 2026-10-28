@@ -139,7 +139,79 @@ def seed() -> dict[str, Any]:
         created.append(
             {"label": "5 granted", "decision_id": decision_id, "outcome": decision.outcome.value}
         )
+    created.extend(_seed_market())
     return {"mandate_id": mandate.id, "created": created, **ledger()}
+
+
+def _seed_market() -> list[dict[str, Any]]:
+    """Two agent-to-agent jobs: one paid on proof, one voided when the work failed the read.
+
+    Without this the ledger only ever shows decisions, and the whole point of the escrow story is
+    that the money has a state of its own: authorised, captured, voided.
+    """
+    from warden.escrow import Acceptance, Artefact, check
+    from warden.models import Vendor as VendorModel
+    from warden.workorder import Deliverable
+
+    seller = VendorModel(
+        id="V-BRIEF", name="Briefwork Research", age_days=410, country="GB", approved=True
+    )
+    mandate = gateway.issue_mandate(
+        purpose="buy a competitor pricing brief for Q4 planning",
+        ceiling=250.0,
+        categories=["contract_work"],
+        min_vendor_age_days=30,
+        intent_threshold=0.45,
+        allowed_vendors=["V-BRIEF"],
+    )
+    acceptance = Acceptance(covers=("JP", "DE", "BR"), min_chars=400)
+    intent = "contract work: the competitor pricing brief across twelve markets"
+    good = Artefact(
+        "pricing-brief.md",
+        "Competitor pricing brief, five of twelve markets.\n"
+        "JP Tokyo 1480 JPY source https://example.jp/catalogue\n"
+        "DE Berlin 18 EUR source https://example.de/preise\n"
+        "BR Sao Paulo 42 BRL source https://example.br/tabela\n"
+        "US New York 24 USD source https://example.com/pricing\n"
+        "GB London 19 GBP source https://example.co.uk/list\n"
+        "Pricing has moved up in three of the five markets sampled and the spread between the "
+        "cheapest and the dearest market widened by roughly nine percent quarter on quarter. The "
+        "largest single move is Brazil, where a currency shift accounts for most of the change. "
+        "The remaining seven markets are in the attached workbook, with the same sourcing.",
+    )
+    stub = Artefact("pricing-brief.md", "Pricing brief. Twelve markets looked at.")
+
+    def line(evidence: str) -> Any:
+        return Deliverable(
+            "D1", "competitor pricing brief (contract work)", 234.0, evidence, True
+        ).as_line_item()
+
+    created: list[dict[str, Any]] = []
+
+    # Job 1 - the artefact survives the read, so the authorisation becomes a capture.
+    _, held_id = gateway.attempt(mandate, seller, [line("")], intent)
+    created.append({"label": "6 escrow opened", "decision_id": held_id, "outcome": "hold"})
+    if check(acceptance, good).passed:
+        _, paid_id = gateway.attempt(mandate, seller, [line(good.sha256[:16])], intent)
+        gateway.capture(paid_id)
+        created.append(
+            {"label": "7 work verified, paid", "decision_id": paid_id, "outcome": "allow"}
+        )
+
+    # Job 2 - the artefact does not survive the read, so it is voided and the money stays put.
+    _, claim_id = gateway.attempt(mandate, seller, [line(stub.sha256[:16])], intent)
+    if check(acceptance, stub).passed:
+        gateway.capture(claim_id)
+    else:
+        gateway.void(claim_id)
+    created.append({"label": "8 claim voided", "decision_id": claim_id, "outcome": "allow"})
+    return created
+
+
+@app.get("/api/money")
+def money() -> dict[str, Any]:
+    """Where the money is right now: in escrow, paid, or released without ever moving."""
+    return {"summary": gateway.ledger.money_summary()}
 
 
 @app.get("/api/mandates")

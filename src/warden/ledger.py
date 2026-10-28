@@ -31,9 +31,17 @@ CREATE TABLE IF NOT EXISTS decisions (
     intent_score REAL NOT NULL,
     mode TEXT NOT NULL,
     paypal_id TEXT,
-    receipt TEXT NOT NULL
+    receipt TEXT NOT NULL,
+    money_state TEXT NOT NULL DEFAULT '',
+    money_ref TEXT
 );
 """
+
+# Added after the first release, so existing ledgers get migrated rather than abandoned.
+MONEY_COLUMNS = (
+    ("money_state", "TEXT NOT NULL DEFAULT ''"),
+    ("money_ref", "TEXT"),
+)
 
 
 class Ledger:
@@ -42,7 +50,14 @@ class Ledger:
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
+        self._migrate()
         self._conn.commit()
+
+    def _migrate(self) -> None:
+        existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(decisions)")}
+        for name, kind in MONEY_COLUMNS:
+            if name not in existing:
+                self._conn.execute(f"ALTER TABLE decisions ADD COLUMN {name} {kind}")
 
     # ── mandates ────────────────────────────────────────────────────────────────────────────
     def save_mandate(self, mandate: Mandate, at: str) -> None:
@@ -89,6 +104,26 @@ class Ledger:
         self._conn.commit()
         return decision_id
 
+    def set_money_state(self, decision_id: str, state: str, ref: str | None = None) -> None:
+        """Record where the money actually is: authorised, captured, or voided.
+
+        The decision says whether the agent was allowed to spend. This says whether the money
+        moved. They are different questions, and a ledger that conflates them cannot answer
+        "what is currently in limbo?" - which is the question an escrow has to answer.
+        """
+        self._conn.execute(
+            "UPDATE decisions SET money_state = ?, money_ref = ? WHERE id = ?",
+            (state, ref, decision_id),
+        )
+        self._conn.commit()
+
+    def money_summary(self) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            """SELECT money_state, currency, COUNT(*) AS n, ROUND(SUM(amount), 2) AS total
+               FROM decisions WHERE money_state <> '' GROUP BY money_state, currency"""
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def rows(self, limit: int = 200) -> list[dict[str, Any]]:
         rows = self._conn.execute(
             "SELECT * FROM decisions ORDER BY at DESC LIMIT ?", (limit,)
@@ -112,6 +147,8 @@ class Ledger:
                     "reason": (payload.get("reasons") or [""])[0],
                     "counterfactual": payload.get("counterfactual"),
                     "paypal_id": row["paypal_id"],
+                    "money_state": row["money_state"],
+                    "money_ref": row["money_ref"],
                 }
             )
         return out
