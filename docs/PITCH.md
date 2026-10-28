@@ -51,6 +51,14 @@ HMAC-signed receipt that anyone can re-verify.
    instruction: drop what was out of scope, trim to the ceiling, restate an intent that was wrong —
    then resubmit through the same rules. Autonomy that is fenced, not autonomy with a vibe.
 
+**A reality check from the field (checked Oct 2026):** agent-to-agent negotiation over PayPal is
+*not* a gap — at least four other entries in this hackathon do it (consensus-commerce with a
+fairness referee, AgentPal with ZOPA and invoicing, PayAgent AI with smart invoices,
+asterion-commerce with weather-conditional capture). Treat negotiation as **table stakes**, not the
+differentiator, and do not spend the video on it. What none of them show is a quoted price surviving
+an independent test of *whether the work was done*, with the money held until it is — which is the
+escrow story, and the reason to lead with it.
+
 **Not new, and say so before a judge does:** agent mandates (AP2, Sept 2025 — PayPal is a launch
 partner), signed receipts, policy engines, and rule-based spending controls. The novelty is the
 *combination* and the width of the wedge, not each brick.

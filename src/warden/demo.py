@@ -297,7 +297,13 @@ def run_payout_story(mode: str = "auto") -> int:
 
 
 def run_negotiation_story(mode: str = "auto") -> int:
-    """Two agents haggle; the mandate decides whether the deal may settle.
+    """Two agents haggle over a supplier quote; the mandate decides whether the deal may settle.
+
+    Worth being precise about the setting, because retail is the wrong one: a shop on a website
+    has a fixed price and nothing to negotiate. Prices are quoted, not listed, whenever the thing
+    is not a shelf SKU - bulk orders, contractor bids, freight, print, custom work. That is where
+    a buyer agent and a supplier agent actually have a conversation, and it is where the settled
+    number reaches PayPal.
 
     The interesting part is the failure. A buyer agent that concedes past its ceiling and lets
     the payer discover the overrun is the whole problem - so here the agent walks away, and then
@@ -319,6 +325,7 @@ def run_negotiation_story(mode: str = "auto") -> int:
     print(f"mandate   {mandate.id}   ceiling {mandate.ceiling:.2f} {mandate.currency}")
     print(f"purpose   {mandate.purpose}")
     print(RULE)
+    print("setting   a supplier quote for a bulk order - not a shop, where the price is fixed")
     print()
 
     # ── Round one: six cartridges, a seller whose floor is above the ceiling ──────────────

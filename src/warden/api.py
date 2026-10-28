@@ -263,6 +263,9 @@ def negotiation_view() -> dict[str, Any]:
     deal = decision_at(445.0, 5)
 
     return {
+        "setting": (
+            "A supplier quote for a bulk order. Retail prices are fixed; quoted prices are not."
+        ),
         "mandate": {"id": mandate.id, "ceiling": mandate.ceiling, "currency": mandate.currency},
         "seller": {"list_price": seller.list_price, "floor": seller.floor},
         "rounds": [

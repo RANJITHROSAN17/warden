@@ -74,3 +74,35 @@ product change**:
 Then the demo is two processes, a real network boundary, and Warden sitting between them — which is
 a materially stronger claim than two objects in a loop. It is also the honest way to show a judge
 what "agent-to-agent" means without asserting more than the code does.
+
+## Layer 4 — what is actually negotiable, and where PayPal sits
+
+The sharpest objection to any negotiation demo: **on a website, the price is fixed.** That is
+correct, and it rules out the setting most demos reach for.
+
+| Where | Is the price fixed? | Would PayPal touch it? |
+|---|---|---|
+| Retail checkout, shop shelf, SKU | **Yes.** Nothing to negotiate | Yes — order, capture, done |
+| Supplier quote for a bulk order | No — quoted per order | Yes, via invoice or order |
+| Contractor or freelance bid | No — bids | Yes, commonly |
+| Freight, print, custom manufacturing | No — RFQ | Yes |
+| Dispute settlement, partial refund | No — negotiated | Yes, as a partial refund |
+| Used goods, marketplaces, travel rates | Sometimes | Yes |
+
+**PayPal has no negotiation primitive, and this project does not pretend it does.** The haggling
+happens between two agents; PayPal sees one settled order at one agreed price. The nearest thing
+PayPal ships to a negotiation artefact is the AP2 mandate — an authorisation bound to terms — which
+is exactly the object Warden enforces.
+
+That is why the demo is a **supplier quote for a bulk order**, not a shopping cart. Retail has
+nothing to negotiate and the scenario would be dishonest.
+
+### Where this is already live
+
+A2A, now under the Agentic AI Foundation, cites agentic commerce as a live deployment: **Google
+Cloud and PayPal run shopping and merchant agents over A2A across product discovery, pricing and
+order fulfilment, with AP2 providing the payment authorisation layer.** Note the word *pricing* —
+the negotiation already exists at the agent layer, and the authorisation already exists at the
+payment layer. What is missing between them is a mandate that can hold a quoted price to a stated
+purpose, and evidence that the work happened.
+
