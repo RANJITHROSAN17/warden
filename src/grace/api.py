@@ -15,6 +15,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
+from grace import character as character_mod
 from grace import dispute as dispute_mod
 from grace import receipts
 from grace.engine import Engine
@@ -128,6 +129,40 @@ def file_dispute(dispute_id: str) -> dict[str, Any]:
         "narrative": assessment["narrative"],
         "receipt": signed,
     }
+
+
+CHARACTER_REQUEST = {
+    "vendor": "PixelForge Design",
+    "purpose": "campaign artwork for spring launch",
+    "amount": 480.0,
+    "at": "2026-10-29T11:05:00",
+}
+
+CHARACTER_ODD = {
+    "vendor": "Unregistered Holdings Ltd",
+    "purpose": "urgent cryptocurrency settlement",
+    "amount": 9600.0,
+    "at": "2026-10-29T03:12:00",
+}
+
+
+@app.get("/api/character")
+def character() -> dict[str, Any]:
+    """One payment, judged against three different businesses. The idea, in one JSON."""
+    from grace.demo import _character_histories
+
+    out = []
+    for name, holder in _character_histories().items():
+        normal = character_mod.judge(holder, character_mod.Request(**CHARACTER_REQUEST))
+        odd = character_mod.judge(holder, character_mod.Request(**CHARACTER_ODD))
+        out.append(
+            {
+                "account": name,
+                "in_character": normal.public(),
+                "out_of_character": odd.public(),
+            }
+        )
+    return {"request": CHARACTER_REQUEST, "odd_request": CHARACTER_ODD, "accounts": out}
 
 
 @app.get("/api/summary")

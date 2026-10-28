@@ -61,6 +61,29 @@
   .verdict .invalid { background:rgba(229,72,77,.16); color:var(--bad); }
   .note { color:var(--dim); font-size:12px; margin-top:12px; }
   .note b { color:var(--ink); }
+  /* character */
+  .chars { display:flex; gap:10px; flex-wrap:wrap; margin-top:10px; }
+  .char { flex:1 1 260px; background:var(--panel); border:1px solid var(--line);
+          border-radius:10px; padding:12px 14px; }
+  .char.allow { border-color:rgba(47,191,113,.45); }
+  .char.hold { border-color:rgba(224,168,0,.45); }
+  .char.escalate { border-color:rgba(229,72,77,.45); }
+  .char .who { font-size:13px; font-weight:600; }
+  .char .conf { font-size:26px; font-weight:700; margin:2px 0 0; }
+  .char.allow .conf { color:var(--ok); } .char.hold .conf { color:var(--warn); }
+  .char.escalate .conf { color:var(--bad); }
+  .char .why { color:var(--dim); font-size:11.5px; margin:2px 0 8px; }
+  .char .r { display:flex; gap:7px; font-size:11.5px; padding:3px 0;
+             border-top:1px solid #171c27; }
+  .char .r .c { color:var(--dim); min-width:56px; text-transform:uppercase; font-size:10px;
+                letter-spacing:.5px; padding-top:1px; }
+  .char .r.hit .c { color:var(--ok); } .char .r.miss .c { color:var(--bad); }
+  .char .r .d { color:var(--ink); }
+  .char .cites { color:#5c6a83; font-size:10.5px; }
+  .char .ceil { margin-top:8px; font-size:11.5px; color:var(--dim); }
+  .char .ceil b { color:var(--ink); }
+  .char .odd { margin-top:9px; border-top:1px dashed #232a38; padding-top:7px;
+               font-size:11.5px; color:var(--warn); }
   /* the money lifecycle */
   .flow { display:flex; align-items:stretch; gap:0; margin:6px 0 4px; flex-wrap:wrap; }
   .flow .card { border-radius:0; border-right:0; min-width:0; flex:1 1 150px; }
@@ -94,7 +117,16 @@
   <span class="badge" id="signing">signing: …</span>
 </header>
 <main>
-  <div class="flowlabel">where the money is, right now</div>
+  <h2 style="font-size:15px;margin:22px 0 4px">Character — the same payment, judged three ways</h2>
+  <p class="note" style="margin:0 0 6px">
+    One identical 480.00 payment to <b>PixelForge Design</b>, judged against three different
+    businesses. No ceiling is consulted. The answer differs because the <b>account</b> differs —
+    and every reason names the payments it was reasoned from.
+  </p>
+  <div class="chars" id="chars"></div>
+  <div class="note" id="chars-odd"></div>
+
+  <div class="flowlabel" style="margin-top:26px">where the money is, right now</div>
   <div class="flow">
     <div class="card"><div class="k">Committed</div><div class="v open" id="s-open">0.00</div>
       <div class="sub" id="s-open-sub">authorised, not taken — held</div></div>
@@ -143,7 +175,7 @@
   </p>
 </main>
 <script>
-const state = { payments: [], summary: null, selected: null, disputes: [] };
+const state = { payments: [], summary: null, selected: null, disputes: [], character: null };
 
 async function api(path, options) {
   const response = await fetch(path, Object.assign({ headers: { "Content-Type": "application/json" } }, options));
@@ -176,6 +208,36 @@ function lifecycle(p) {
   return `<div class="life">${stages.map(([lab, amt, when, cls]) => `
     <div class="st ${cls}"><div class="lab">${lab}</div>
       <div class="amt">${money(amt)}</div><div class="when">${when}</div></div>`).join("")}</div>`;
+}
+
+const DECISION_CLASS = { allow: "allow", hold: "hold", escalate: "escalate" };
+
+function renderCharacter() {
+  const data = state.character;
+  if (!data) return;
+  document.getElementById("chars").innerHTML = data.accounts.map(account => {
+    const v = account.in_character;
+    const reasons = v.reasons.map(r => `
+      <div class="r ${r.score >= 0.7 ? "hit" : r.score >= 0.4 ? "" : "miss"}">
+        <span class="c">${r.score >= 0.7 ? "ok" : r.score >= 0.4 ? "part" : "miss"}</span>
+        <span><span class="d">${r.component}</span> — ${r.detail}
+          ${r.cites.length ? `<div class="cites">cites ${r.cites.join(", ")}</div>` : ""}
+        </span>
+      </div>`).join("");
+    const odd = account.out_of_character;
+    return `
+      <div class="char ${DECISION_CLASS[v.decision] || ""}">
+        <div class="who">${account.account}</div>
+        <div class="conf">${v.conformance.toFixed(2)}</div>
+        <div class="why">${v.decision.toUpperCase()} · ${v.explanation}</div>
+        ${reasons}
+        <div class="ceil">ceiling <b>500.00</b> → <b>${v.suggested_ceiling.toFixed(2)}</b></div>
+        <div class="odd">out of character: 9,600.00 crypto at 03:12 →
+          <b>${odd.decision.toUpperCase()}</b> (${odd.conformance.toFixed(2)})</div>
+      </div>`;
+  }).join("");
+  document.getElementById("chars-odd").innerHTML =
+    "A design studio may buy design. It may not become a different company at three in the morning.";
 }
 
 function renderSummary() {
@@ -319,14 +381,16 @@ function renderPanel(title, rows, note) {
 
 async function refresh() {
   const [payments, summary, disputes] = await Promise.all([
-    api("/api/payments"), api("/api/summary"), api("/api/disputes"),
+    api("/api/payments"), api("/api/summary"), api("/api/disputes"), api("/api/character"),
   ]);
   state.payments = payments.payments;
   state.summary = summary;
   state.disputes = disputes.disputes;
+  state.character = character;
   renderSummary();
   renderRows();
   renderDisputes();
+  renderCharacter();
 }
 
 async function boot() {
