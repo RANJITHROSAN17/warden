@@ -339,3 +339,7 @@ docs/EXPLAIN.md          the same story with no code in it
 ```
 
 MIT.
+
+## Maintainer
+
+**[Ranjith Rosan](https://github.com/RANJITHROSAN17)** maintains Grace, the sandbox agent-payment prototype published in this `warden` repository. PayPal and other named providers are separate entities; no affiliation or endorsement is implied.
