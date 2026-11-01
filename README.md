@@ -18,6 +18,22 @@ Sandbox only — no real money moves anywhere in this repository.</sub>
 
 ---
 
+## Run the synthetic example before connecting a payment account
+
+Grace is the product name; `warden` is this repository’s name. Start with an isolated, credential-free terminal:
+
+```bash
+git clone https://github.com/RANJITHROSAN17/warden.git
+cd warden
+python -m venv .venv
+# Activate: source .venv/bin/activate (macOS/Linux)
+# Or: .\.venv\Scripts\Activate.ps1 (Windows PowerShell)
+python -m pip install -e .
+python -m grace.demo --story character
+```
+
+Use no payment or embedding credentials for this first run. The account histories are synthetic and the lexical fallback is not a learned fraud model. Expect the same example payment to receive different verdicts for different supplied histories. Those verdicts demonstrate mechanics, not validated fraud detection or authorization for real spending. See [Honest notes](#honest-notes) before enabling a server or sandbox integration.
+
 ## The cost of every brake
 
 Look at what the whole industry does to make agent spending safe: AP2 signs a spend limit, Visa TAP
@@ -323,3 +339,7 @@ docs/EXPLAIN.md          the same story with no code in it
 ```
 
 MIT.
+
+## Maintainer
+
+**[Ranjith Rosan](https://github.com/RANJITHROSAN17)** maintains Grace, the sandbox agent-payment prototype published in this `warden` repository. PayPal and other named providers are separate entities; no affiliation or endorsement is implied.
